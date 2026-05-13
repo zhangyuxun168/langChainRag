@@ -930,6 +930,20 @@ app.mount("/", StaticFiles(directory=USER_STATIC_DIR, html=True), name="user")
 
 # ========== 应用启动入口 ==========
 
+# 为 IIS 部署提供 WSGI 应用对象
+# IIS + wfastcgi 需要 WSGI 应用，而不是 ASGI 应用
+# 使用 a2wsgi 将 FastAPI (ASGI) 转换为 WSGI
+try:
+    from a2wsgi import ASGI2WSGI
+    # 创建 WSGI 应用对象，供 IIS 使用
+    # IIS 部署时会使用此对象
+    wsgi_app = ASGI2WSGI(app)
+except ImportError:
+    # 如果没有安装 a2wsgi，则不提供 WSGI 应用
+    # 这种情况下只能使用 uvicorn 直接运行
+    wsgi_app = None
+    print("警告：未安装 a2wsgi，IIS 部署将不可用。请运行: pip install a2wsgi")
+
 if __name__ == "__main__":
     import uvicorn
     # 启动FastAPI应用

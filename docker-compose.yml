@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  langchain-rag:
+    build: .
+    container_name: langchain-rag
+    ports:
+      - "8000:8000"
+    volumes:
+      # 持久化数据
+      - ./uploads:/app/uploads
+      - ./chroma_db:/app/chroma_db
+      - ./.env:/app/.env
+    environment:
+      - APP_PORT=8000
+    restart: unless-stopped
+    # 如果使用Ollama本地模型，需要连接到宿主机
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

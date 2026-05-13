@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG文档助手 - 后台管理</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header h1 {
+            color: #333;
+            font-size: 24px;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 20px;
+        }
+        
+        .nav-links a {
+            text-decoration: none;
+            color: #667eea;
+            font-weight: 500;
+            padding: 8px 16px;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+        
+        .nav-links a:hover {
+            background: #f0f0ff;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .tab {
+            background: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            color: #666;
+            transition: all 0.2s;
+        }
+        
+        .tab.active {
+            background: #667eea;
+            color: white;
+        }
+        
+        .tab:hover:not(.active) {
+            background: #f5f5f5;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 30px;
+            margin-bottom: 20px;
+        }
+        
+        .card h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 18px;
+        }
+        
+        .card h3 {
+            color: #333;
+            margin-top: 20px;
+            margin-bottom: 16px;
+            font-size: 16px;
+        }
+        
+        .upload-area {
+            border: 2px dashed #ddd;
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+        
+        .upload-area:hover, .upload-area.dragover {
+            border-color: #667eea;
+            background: #f8f9ff;
+        }
+        
+        .upload-area input[type="file"] {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            cursor: pointer;
+        }
+        
+        .upload-area .icon {
+            font-size: 48px;
+            color: #667eea;
+            margin-bottom: 16px;
+        }
+        
+        .upload-area .text {
+            color: #666;
+            font-size: 16px;
+        }
+        
+        .upload-area .hint {
+            color: #999;
+            font-size: 14px;
+            margin-top: 8px;
+        }
+        
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        
+        .btn:hover {
+            background: #5a6fd6;
+        }
+        
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+        }
+        
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        
+        .btn-success {
+            background: #28a745;
+        }
+        
+        .btn-success:hover {
+            background: #218838;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+        }
+        
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .form-group select {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+            background: white;
+        }
+        
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .model-select-wrapper {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        .model-select-wrapper select {
+            flex: 1;
+        }
+        
+        .btn-small {
+            padding: 12px 16px;
+            font-size: 14px;
+        }
+        
+        .model-hint {
+            font-size: 12px;
+            color: #999;
+            margin-top: 8px;
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+        }
+        
+        .alert {
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .alert.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .alert.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .alert.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
+        .config-display {
+            background: #f8f9fa;
+            padding: 16px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 14px;
+            color: #333;
+            white-space: pre-wrap;
+        }
+        
+        .uploaded-files {
+            margin-top: 20px;
+        }
+        
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin-bottom: 8px;
+        }
+        
+        .file-item .name {
+            color: #333;
+        }
+        
+        .file-item .chunks {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .file-item .actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .btn-delete {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .btn-delete:hover {
+            background: #c82333;
+        }
+
+        .btn-delete:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .file-info {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .file-meta {
+            color: #999;
+            font-size: 12px;
+        }
+        
+        .test-result {
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 16px;
+            display: none;
+        }
+        
+        .test-result.show {
+            display: block;
+        }
+        
+        .test-result.success {
+            border-color: #28a745;
+            background: #d4edda;
+        }
+        
+        .test-result.error {
+            border-color: #dc3545;
+            background: #f8d7da;
+        }
+        
+        .test-result .label {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+        }
+        
+        .test-result .content {
+            color: #555;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        
+        .test-loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .test-loading.show {
+            display: block;
+        }
+        
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>RAG文档助手管理系统</h1>
+            <div class="nav-links">
+                <a href="/">用户搜索页面</a>
+                <a href="/admin">后台管理</a>
+            </div>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('upload')">文件上传</button>
+            <button class="tab" onclick="showTab('manage')">文件管理</button>
+            <button class="tab" onclick="showTab('config')">系统配置</button>
+        </div>
+        
+        <div id="upload-tab" class="card">
+            <h2>上传文档</h2>
+            <div class="upload-area" id="upload-area">
+                <div class="icon">📁</div>
+                <div class="text">点击或拖拽文件到此处上传</div>
+                <div class="hint">支持格式: .txt, .pdf, .docx</div>
+                <input type="file" id="file-input" accept=".txt,.pdf,.docx">
+            </div>
+            
+            <div class="alert" id="upload-alert"></div>
+        </div>
+        
+        <div id="manage-tab" class="card" style="display: none;">
+            <h2>文件管理</h2>
+            <div class="alert" id="manage-alert"></div>
+            
+            <div class="uploaded-files" id="uploaded-files"></div>
+        </div>
+        
+        <div id="config-tab" class="card" style="display: none;">
+            <h2>系统配置</h2>
+            <div class="alert" id="config-alert"></div>
+            
+            <h3>大模型配置</h3>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>API地址</label>
+                    <input type="text" id="llm_api_base" placeholder="http://localhost:11434/v1">
+                </div>
+                <div class="form-group">
+                    <label>API密钥</label>
+                    <input type="text" id="llm_api_key" placeholder="ollama">
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label>模型名称</label>
+                    <div class="model-select-wrapper">
+                        <input type="text" id="llm_model_name" list="model-list" placeholder="输入模型名称或从下方选择...">
+                        <datalist id="model-list">
+                        </datalist>
+                        <button class="btn btn-small" onclick="refreshModels()">🔄</button>
+                    </div>
+                    <div class="model-hint" id="model-hint"></div>
+                </div>
+                <div class="form-group">
+                    <label>返回结果数量 (Top K)</label>
+                    <input type="number" id="top_k" min="1" max="10" value="3">
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label>温度参数 (Temperature)</label>
+                <input type="number" id="temperature" step="0.1" min="0" max="1" value="0.7">
+            </div>
+            
+            <div style="display: flex; gap: 10px;">
+                <button class="btn" onclick="saveConfig()">保存配置</button>
+                <button class="btn btn-success" onclick="testModel()">测试模型连接</button>
+                <button class="btn btn-secondary" onclick="useLocalModel()">使用本地模型</button>
+            </div>
+            
+            <div class="test-loading" id="test-loading">
+                <div class="spinner"></div>
+                <div>正在连接模型...</div>
+            </div>
+            
+            <div class="test-result" id="test-result"></div>
+            
+            <h3>当前配置</h3>
+            <div class="config-display" id="current-config"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api';
+        
+        function showTab(tabName) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.card').forEach(c => c.style.display = 'none');
+            
+            event.target.classList.add('active');
+            document.getElementById(tabName + '-tab').style.display = 'block';
+            
+            if (tabName === 'config') {
+                // 加载配置的同时也加载模型列表（包括线上和本地）
+                loadModels();
+                loadConfig();
+            }
+
+            if (tabName === 'manage') {
+                // 文件管理标签页加载文件列表
+                loadUploadedFiles();
+            }
+        }
+
+        async function loadUploadedFiles() {
+            try {
+                const response = await fetch(`${API_BASE}/uploaded-files`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP错误: ${response.status}`);
+                }
+                
+                const result = await response.json();
+
+                const container = document.getElementById('uploaded-files');
+                container.innerHTML = '';
+
+                // 检查API返回是否成功
+                if (!result.success) {
+                    container.innerHTML = `<div style="color: #dc3545; text-align: center; padding: 20px;">加载失败: ${result.error || '未知错误'}</div>`;
+                    return;
+                }
+
+                if (!result.files || result.files.length === 0) {
+                    container.innerHTML = '<div style="color: #666; text-align: center; padding: 20px;">暂无已上传的文件</div>';
+                    return;
+                }
+
+                result.files.forEach(file => {
+                    // 使用DOM API创建元素，避免字符串拼接导致的安全问题
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'file-item';
+                    
+                    const fileInfo = document.createElement('div');
+                    fileInfo.className = 'file-info';
+                    
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'name';
+                    nameSpan.textContent = '📄 ' + file.filename;
+                    
+                    const metaSpan = document.createElement('span');
+                    metaSpan.className = 'file-meta';
+                    metaSpan.textContent = file.size_formatted + ' · ' + file.chunks + ' 个片段';
+                    
+                    fileInfo.appendChild(nameSpan);
+                    fileInfo.appendChild(metaSpan);
+                    
+                    const actionsDiv = document.createElement('div');
+                    actionsDiv.className = 'actions';
+                    
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'btn-delete';
+                    deleteBtn.textContent = '删除';
+                    // 使用闭包保存文件名，避免循环变量引用问题
+                    deleteBtn.addEventListener('click', () => deleteFile(file.filename, deleteBtn));
+                    
+                    actionsDiv.appendChild(deleteBtn);
+                    fileItem.appendChild(fileInfo);
+                    fileItem.appendChild(actionsDiv);
+                    
+                    container.appendChild(fileItem);
+                });
+            } catch (error) {
+                console.error('加载文件列表失败:', error);
+                const container = document.getElementById('uploaded-files');
+                container.innerHTML = `<div style="color: #dc3545; text-align: center; padding: 20px;">加载文件列表失败: ${error.message}</div>`;
+            }
+        }
+
+        async function deleteFile(filename, btn) {
+            if (!confirm(`确定要删除文件 "${filename}" 吗？删除后将同时删除向量数据库中的数据，此操作不可恢复。`)) {
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = '删除中...';
+
+            try {
+                // 对文件名进行URL编码，处理特殊字符
+                const encodedFilename = encodeURIComponent(filename);
+                const response = await fetch(`${API_BASE}/files/${encodedFilename}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    btn.closest('.file-item').remove();
+
+                    // 显示成功提示
+                    showAlert('manage-alert', 'success', `文件 ${filename} 删除成功，向量数据库中的相关数据已同步删除`);
+                } else {
+                    const result = await response.json();
+                    throw new Error(result.detail || '删除失败');
+                }
+            } catch (error) {
+                showAlert('manage-alert', 'error', '删除失败: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '删除';
+            }
+        }
+
+        /**
+         * 显示提示消息
+         */
+        function showAlert(alertId, type, message) {
+            const alert = document.getElementById(alertId);
+            alert.className = `alert ${type}`;
+            alert.textContent = message;
+            alert.style.display = 'block';
+            
+            // 3秒后自动隐藏
+            setTimeout(() => {
+                alert.style.display = 'none';
+            }, 3000);
+        }
+        
+        async function uploadFile(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            const alert = document.getElementById('upload-alert');
+            alert.className = 'alert';
+            alert.style.display = 'none';
+            
+            try {
+                const response = await fetch(`${API_BASE}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert.className = 'alert success';
+                    alert.textContent = `${result.message} - 切分了 ${result.chunks_count} 个片段`;
+                    alert.style.display = 'block';
+                    
+                    addFileToList(result.filename, result.chunks_count);
+                } else {
+                    alert.className = 'alert error';
+                    alert.textContent = result.detail || '上传失败';
+                    alert.style.display = 'block';
+                }
+            } catch (error) {
+                alert.className = 'alert error';
+                alert.textContent = '上传失败: ' + error.message;
+                alert.style.display = 'block';
+            }
+        }
+        
+        function addFileToList(filename, chunksCount) {
+            const container = document.getElementById('uploaded-files');
+            const fileItem = document.createElement('div');
+            fileItem.className = 'file-item';
+            fileItem.innerHTML = `
+                <div class="file-info">
+                    <span class="name">📄 ${filename}</span>
+                    <span class="file-meta">${chunksCount} 个片段</span>
+                </div>
+                <div class="actions">
+                    <button class="btn-delete" onclick="deleteFile('${filename}', this)">删除</button>
+                </div>
+            `;
+            container.appendChild(fileItem);
+        }
+        
+        document.getElementById('file-input').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                uploadFile(file);
+            }
+        });
+        
+        const uploadArea = document.getElementById('upload-area');
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (file) {
+                uploadFile(file);
+            }
+        });
+        
+        /**
+         * 使用本地Ollama模型
+         * 自动加载本地已部署的大模型配置
+         */
+        async function useLocalModel() {
+            const alert = document.getElementById('config-alert');
+            
+            try {
+                const response = await fetch(`${API_BASE}/ollama/models`);
+                const result = await response.json();
+                
+                if (result.success && result.models && result.models.length > 0) {
+                    // 设置默认的Ollama API地址
+                    document.getElementById('llm_api_base').value = 'http://localhost:11434/v1';
+                    // Ollama不需要API密钥
+                    document.getElementById('llm_api_key').value = 'ollama';
+                    // 使用第一个本地模型
+                    document.getElementById('llm_model_name').value = result.models[0].name;
+                    
+                    alert.className = 'alert success';
+                    alert.textContent = `已加载本地模型: ${result.models[0].name}`;
+                    alert.style.display = 'block';
+                } else {
+                    alert.className = 'alert error';
+                    alert.textContent = '未找到本地模型，请确保Ollama已启动并已下载模型';
+                    alert.style.display = 'block';
+                }
+            } catch (error) {
+                alert.className = 'alert error';
+                alert.textContent = '连接Ollama失败: ' + error.message;
+                alert.style.display = 'block';
+            }
+        }
+
+        /**
+         * 获取所有模型列表（包括线上模型和本地Ollama模型）
+         */
+        async function loadModels() {
+            const datalist = document.getElementById('model-list');
+            const hint = document.getElementById('model-hint');
+            const modelInput = document.getElementById('llm_model_name');
+            
+            // 清空现有选项
+            datalist.innerHTML = '';
+            
+            try {
+                // 获取线上模型列表
+                const onlineResponse = await fetch(`${API_BASE}/models`);
+                const onlineResult = await onlineResponse.json();
+                
+                // 获取Ollama本地模型列表
+                let ollamaModels = [];
+                try {
+                    const ollamaResponse = await fetch(`${API_BASE}/ollama/models`);
+                    const ollamaResult = await ollamaResponse.json();
+                    if (ollamaResult.success) {
+                        ollamaModels = ollamaResult.models;
+                    }
+                } catch (e) {
+                    console.log('Ollama不可用，跳过');
+                }
+                
+                const allModels = new Set();
+                
+                // 添加线上模型选项
+                if (onlineResult.success && onlineResult.models) {
+                    Object.entries(onlineResult.models).forEach(([provider, info]) => {
+                        info.models.forEach(model => {
+                            allModels.add(model);
+                        });
+                    });
+                }
+                
+                // 添加Ollama模型
+                ollamaModels.forEach(ollamaModel => {
+                    allModels.add(ollamaModel.name);
+                });
+                
+                // 将所有模型添加到datalist
+                allModels.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model;
+                    datalist.appendChild(option);
+                });
+                
+                hint.textContent = `已加载 ${allModels.size} 个模型（线上+本地），可直接输入或从下拉建议中选择`;
+                hint.style.color = '#28a745';
+                
+            } catch (error) {
+                hint.textContent = '获取模型列表失败: ' + error.message + '，您仍可手动输入模型名称';
+                hint.style.color = '#dc3545';
+            }
+        }
+        
+        /**
+         * 刷新模型列表
+         */
+        async function refreshModels() {
+            await loadModels();
+        }
+        
+        async function loadConfig() {
+            try {
+                const response = await fetch(`${API_BASE}/config`);
+                const config = await response.json();
+                
+                document.getElementById('top_k').value = config.top_k;
+                document.getElementById('temperature').value = config.temperature;
+                document.getElementById('llm_api_base').value = config.llm_api_base;
+                
+                // 对于select元素，设置选中项
+                const modelSelect = document.getElementById('llm_model_name');
+                modelSelect.value = config.llm_model_name;
+                
+                document.getElementById('llm_api_key').value = '';
+                
+                document.getElementById('current-config').textContent = JSON.stringify(config, null, 2);
+            } catch (error) {
+                console.error('加载配置失败:', error);
+            }
+        }
+        
+        async function saveConfig() {
+            const config = {
+                top_k: parseInt(document.getElementById('top_k').value) || 3,
+                temperature: parseFloat(document.getElementById('temperature').value) || 0.7,
+                llm_api_base: document.getElementById('llm_api_base').value || '',
+                llm_model_name: document.getElementById('llm_model_name').value || ''
+            };
+            
+            // 只有当API密钥输入框有值时才发送（空值不发送，保留原有配置）
+            const apiKeyInput = document.getElementById('llm_api_key').value.trim();
+            if (apiKeyInput) {
+                config.llm_api_key = apiKeyInput;
+            }
+            
+            const alert = document.getElementById('config-alert');
+            
+            try {
+                const response = await fetch(`${API_BASE}/config`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(config)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert.className = 'alert success';
+                    alert.textContent = result.message;
+                    alert.style.display = 'block';
+                    
+                    document.getElementById('current-config').textContent = JSON.stringify(result.config, null, 2);
+                } else {
+                    alert.className = 'alert error';
+                    alert.textContent = result.detail || '保存失败';
+                    alert.style.display = 'block';
+                }
+            } catch (error) {
+                alert.className = 'alert error';
+                alert.textContent = '保存失败: ' + error.message;
+                alert.style.display = 'block';
+            }
+        }
+        
+        async function testModel() {
+            const testQuestion = document.getElementById('test-question')?.value || '请介绍一下你自己';
+            const apiBase = document.getElementById('llm_api_base').value;
+            const apiKey = document.getElementById('llm_api_key').value;
+            const modelName = document.getElementById('llm_model_name').value;
+            
+            if (!apiBase || !modelName) {
+                const alert = document.getElementById('config-alert');
+                alert.className = 'alert error';
+                alert.textContent = '请先填写API地址和模型名称';
+                alert.style.display = 'block';
+                return;
+            }
+            
+            const loading = document.getElementById('test-loading');
+            const resultDiv = document.getElementById('test-result');
+            const alert = document.getElementById('config-alert');
+            
+            alert.style.display = 'none';
+            resultDiv.className = 'test-result';
+            resultDiv.style.display = 'none';
+            loading.classList.add('show');
+            
+            try {
+                const response = await fetch(`${API_BASE}/test-model`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        question: '请回复"连接成功"',
+                        api_base: apiBase,
+                        api_key: apiKey,
+                        model_name: modelName
+                    })
+                });
+                
+                const result = await response.json();
+                loading.classList.remove('show');
+                
+                resultDiv.style.display = 'block';
+                
+                if (result.success) {
+                    resultDiv.className = 'test-result success show';
+                    resultDiv.innerHTML = `
+                        <div class="label">✅ 模型连接成功！</div>
+                        <div class="label">模型: ${result.model_name}</div>
+                        <div class="label">模型回答:</div>
+                        <div class="content">${result.answer}</div>
+                    `;
+                } else {
+                    resultDiv.className = 'test-result error show';
+                    resultDiv.innerHTML = `
+                        <div class="label">❌ 模型连接失败</div>
+                        <div class="label">错误信息:</div>
+                        <div class="content">${result.error || '未知错误'}</div>
+                    `;
+                }
+            } catch (error) {
+                loading.classList.remove('show');
+                resultDiv.className = 'test-result error show';
+                resultDiv.innerHTML = `
+                    <div class="label">❌ 请求失败</div>
+                    <div class="content">${error.message}</div>
+                `;
+            }
+        }
+
+        // 页面加载完成后自动加载文件列表（默认显示上传标签页）
+        document.addEventListener('DOMContentLoaded', () => {
+            loadUploadedFiles();
+        });
+    </script>
+</body>
+</html>

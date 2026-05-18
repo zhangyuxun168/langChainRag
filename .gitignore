@@ -32,6 +32,9 @@ chroma_db/
 # Uploaded files
 uploads/
 
+# Local embedding models (can be downloaded from HuggingFace)
+backend/models/
+
 # IDE
 .vscode/
 .idea/

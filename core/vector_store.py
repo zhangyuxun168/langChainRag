@@ -1,158 +1,152 @@
-"""
-向量存储模块
-============
+# ==============================================================================
+# 向量存储模块 - Vector Store Module
+# ==============================================================================
+# 【模块功能】管理ChromaDB向量数据库的初始化、文档存储和语义检索
+# 【核心作用】将文档转换为向量并存储，支持高效的语义相似度搜索
+# 
+# 【调用关系】
+#   - 被调用方：core/rag_engine.py (query方法)、backend/main.py (文件上传/删除接口)
+#   - 调用外部：chromadb、langchain_community.vectorstores.Chroma、requests
+# 
+# 【架构设计】
+#   1. OllamaEmbeddings类：封装嵌入API调用，支持Ollama原生格式和OpenAI兼容格式
+#   2. VectorStoreManager类：单例模式管理ChromaDB连接和嵌入函数实例
+#   3. 延迟初始化：数据库连接和嵌入函数按需创建，优化启动性能
+# ==============================================================================
 
-核心功能：管理ChromaDB向量数据库的初始化、文档存储和检索
+import os
+import json
+from typing import List, Optional
 
-模块职责：
----------
-1. 将文本片段转换为向量（嵌入）并存储到ChromaDB
-2. 根据用户问题进行相似度搜索，找到最相关的文档片段
-3. 管理向量数据库的集合（Collection）
-4. 支持文档列表查询和删除操作
+# 第三方库导入
+import chromadb                                           # ChromaDB向量数据库核心库
+import requests                                           # HTTP请求库，用于调用嵌入API
+from chromadb.config import Settings                       # ChromaDB配置类
+from langchain_community.vectorstores import Chroma       # LangChain封装的Chroma向量存储
+from langchain_core.embeddings import Embeddings          # LangChain嵌入接口标准
+from langchain_core.documents import Document             # LangChain文档数据类型
+from dotenv import load_dotenv                            # 从.env文件加载环境变量
 
-设计模式：
----------
-- 单例模式：确保整个应用只有一个向量数据库连接
-- 延迟初始化：嵌入函数在第一次使用时才创建，避免启动时下载模型失败
+# 本地模型支持（Sentence Transformers）
+try:
+    from sentence_transformers import SentenceTransformer
+    _HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    _HAS_SENTENCE_TRANSFORMERS = False
 
-调用关系：
----------
-- 被调用方：rag_engine.py (检索文档)、main.py (上传/删除文档)
-- 调用外部：Ollama嵌入API、ChromaDB
-
-配置依赖：
----------
-- CHROMA_DB_PATH: 向量数据库存储路径（默认./chroma_db）
-- OLLAMA_API_BASE: Ollama API地址（默认http://localhost:11434）
-- EMBEDDING_MODEL: 嵌入模型名称（默认使用LLM_MODEL_NAME）
-
-========================================
-调用流程说明
-========================================
-
-【文件上传流程 UPLOAD_FLOW】
-【UPLOAD_FLOW-5】main.py upload_file() 调用 vector_store_manager.add_documents()
-    ↓
-【UPLOAD_FLOW-6】VectorStoreManager.add_documents() 添加文档
-    ↓
-【UPLOAD_FLOW-7】VectorStoreManager.get_vector_store() 获取向量存储
-    ↓
-【UPLOAD_FLOW-8】VectorStoreManager.initialize() 初始化数据库连接
-    ↓
-【UPLOAD_FLOW-9】VectorStoreManager._init_embedding() 初始化嵌入函数
-    ↓
-【UPLOAD_FLOW-10】OllamaEmbeddings.embed_documents() 生成嵌入向量
-
-【用户查询流程 QUERY_FLOW】
-【QUERY_FLOW-3】RAGEngine.query() 调用 vector_store_manager.get_vector_store()
-    ↓
-【QUERY_FLOW-4】VectorStoreManager.get_vector_store() 获取向量存储
-    ↓
-【QUERY_FLOW-5】VectorStoreManager.similarity_search() 执行相似度搜索
-    ↓
-【QUERY_FLOW-6】OllamaEmbeddings.embed_query() 生成查询向量
-"""
-
-# ========== 标准库导入 ==========
-import os  
-"""操作系统模块，用于读取环境变量、处理文件路径"""
-
-import json  
-"""JSON处理模块，用于解析Ollama API响应"""
-
-from typing import List, Optional  
-"""类型提示模块，用于标注变量和函数的类型"""
-
-# ========== 第三方库导入 ==========
-import chromadb  
-"""ChromaDB向量数据库客户端，用于存储和检索向量数据"""
-
-import requests  
-"""HTTP请求库，用于调用Ollama嵌入API"""
-
-from chromadb.config import Settings  
-"""ChromaDB配置类，用于设置数据库参数"""
-
-# ========== LangChain相关导入 ==========
-from langchain_community.vectorstores import Chroma  
-"""LangChain的Chroma向量存储封装类，提供添加文档和相似性搜索功能"""
-
-from langchain_core.embeddings import Embeddings  
-"""LangChain嵌入基类，定义嵌入函数接口"""
-
-from langchain_core.documents import Document  
-"""LangChain的Document文档对象类型，表示一段文本及其元数据"""
-
-# ========== 第三方库导入 ==========
-from dotenv import load_dotenv  
-"""dotenv库，用于从.env文件加载环境变量配置"""
-
-# 加载环境变量配置
+# 加载环境变量配置（优先从.env文件读取配置）
 load_dotenv()
 
+# 导入 backend 配置（支持 bge-m3 默认配置）
+try:
+    # 尝试从 backend 导入配置
+    import sys
+    from pathlib import Path
+    backend_dir = Path(__file__).parent.parent / "backend"
+    if str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    from config import Config
+    _config = Config()
+    _USE_BACKEND_CONFIG = True
+except ImportError:
+    # 如果导入失败，使用传统环境变量方式
+    _USE_BACKEND_CONFIG = False
+    _config = None
+
+# ==============================================================================
+# OllamaEmbeddings类 - 嵌入向量生成器
+# ==============================================================================
+# 【设计目的】统一封装不同嵌入服务的调用方式
+# 【支持格式】
+#   - Ollama原生格式：http://localhost:11434/api/embeddings
+#   - OpenAI兼容格式：http://xxx/v1/embeddings
+# 【核心特点】
+#   - 自动检测API格式（URL包含/v1则使用OpenAI格式）
+#   - 支持多种配置优先级（传入参数 > 环境变量 > 默认值）
+#   - 专门处理bge-m3模型的特殊响应格式
 class OllamaEmbeddings(Embeddings):
     """
-    使用Ollama嵌入API的自定义嵌入类
+    支持Ollama原生API和OpenAI兼容API的嵌入向量生成类
     
-    核心功能：
-    --------
-    - 调用本地Ollama服务生成文本嵌入向量
-    - 避免从HuggingFace下载大型嵌入模型
-    - 实现LangChain Embeddings接口，可无缝集成
+    【类字段说明】
+    - model_name: str - 嵌入模型名称（如"bge-m3"、"qwen2.5:7b-instruct"）
+    - base_url: str - API服务地址（如"http://localhost:11434"）
+    - api_key: str - API密钥（可选，OpenAI格式需要）
+    - use_openai_format: bool - 是否使用OpenAI格式调用API
     
-    字段说明：
-    --------
-    - model_name: str - 用于生成嵌入的Ollama模型名称
-    - base_url: str - Ollama API基础地址（不带/v1后缀）
-    
-    Ollama嵌入API说明：
-    ------------------
-    - API地址：http://localhost:11434/api/embeddings
-    - 请求格式：{"model": "模型名称", "prompt": "要嵌入的文本"}
-    - 返回格式：{"embedding": [向量数组]}
-    
-    调用者：
-    -------
-    VectorStoreManager._init_embedding() 内部创建实例
+    【实现原理】
+    继承LangChain的Embeddings接口，实现embed_documents和embed_query方法，
+    底层通过requests库调用外部嵌入服务获取向量。
     """
 
-    def __init__(self, model_name: str = "qwen2.5:7b-instruct"):
+    def __init__(self, model_name: str = "qwen2.5:7b-instruct", 
+                 api_base: str = None, api_key: str = None, api_format: str = None):
         """
-        初始化Ollama嵌入类
+        初始化嵌入向量生成器
         
-        参数：
-        ------
-        model_name: str - 用于生成嵌入的Ollama模型名称，默认为qwen2.5:7b-instruct
+        【配置优先级】传入参数 > EMBEDDING_*环境变量 > LLM_*环境变量 > OLLAMA_* > 默认值
         
-        初始化流程：
-        ----------
-        1. 设置模型名称
-        2. 从环境变量读取Ollama API地址，默认为http://localhost:11434
+        【参数说明】
+        :param model_name: 嵌入模型名称，默认"qwen2.5:7b-instruct"
+        :param api_base: API服务地址，默认None（将从环境变量获取）
+        :param api_key: API密钥，默认None（OpenAI格式需要）
+        :param api_format: API格式，可选"openai"或"ollama"，默认None（自动检测）
         """
-        self.model_name = model_name
-        # Ollama原生嵌入API地址，不带/v1后缀（/v1是OpenAI兼容模式）
-        self.base_url = os.getenv("OLLAMA_API_BASE", "http://localhost:11434").rstrip('/')
+        
+        # 1. 设置嵌入模型名称（配置优先级：传入参数 > EMBEDDING_MODEL > LLM_MODEL_NAME > 默认值）
+        self.model_name = model_name if model_name else \
+            os.getenv("EMBEDDING_MODEL", os.getenv("LLM_MODEL_NAME", "qwen2.5:7b-instruct"))
+        
+        # 2. 设置API地址（配置优先级：传入参数 > EMBEDDING_API_BASE > LLM_API_BASE > OLLAMA_API_BASE > 默认值）
+        if api_base:
+            self.base_url = api_base.rstrip('/')  # 移除末尾斜杠，统一格式
+        else:
+            embed_api_base = os.getenv("EMBEDDING_API_BASE")
+            if embed_api_base:
+                self.base_url = embed_api_base.rstrip('/')
+            else:
+                llm_base_url = os.getenv("LLM_API_BASE")
+                if llm_base_url:
+                    self.base_url = llm_base_url.rstrip('/')
+                else:
+                    self.base_url = os.getenv("OLLAMA_API_BASE", "http://localhost:11434").rstrip('/')
+        
+        # 3. 设置API密钥（配置优先级：传入参数 > EMBEDDING_API_KEY > LLM_API_KEY > 默认空字符串）
+        if api_key:
+            self.api_key = api_key
+        else:
+            embed_api_key = os.getenv("EMBEDDING_API_KEY")
+            if embed_api_key:
+                self.api_key = embed_api_key
+            else:
+                self.api_key = os.getenv("LLM_API_KEY", "")
+        
+        # 4. 设置API格式（显式指定 > URL自动检测）
+        # OpenAI格式URL通常包含/v1路径（如http://localhost:11434/v1）
+        # Ollama原生格式使用/api/embeddings端点
+        if api_format == "openai":
+            self.use_openai_format = True
+        elif api_format == "ollama":
+            self.use_openai_format = False
+        elif api_format is None:
+            # 仅当未指定api_format时才根据URL路径自动检测
+            self.use_openai_format = "/v1" in self.base_url
+        else:
+            self.use_openai_format = "/v1" in self.base_url
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """
-        为多个文档生成嵌入向量
+        批量为文档文本生成嵌入向量
         
-        参数：
-        ------
-        texts: List[str] - 要嵌入的文本列表
+        【调用场景】向向量数据库添加文档时，为每个文档片段生成向量
         
-        返回：
-        ------
-        List[List[float]] - 每个文本对应的向量列表
+        【参数说明】
+        :param texts: List[str] - 需要生成向量的文本列表
+        :return: List[List[float]] - 向量列表，每个元素是一个浮点数组
         
-        调用者：
-        -------
-        Chroma.add_documents() 内部调用（批量添加文档时）
-        
-        执行逻辑：
-        --------
-        遍历文本列表，逐个调用 _get_embedding() 获取向量
+        【实现细节】
+        遍历文本列表，逐个调用_get_embedding方法获取向量，
+        适合批量处理文档片段。
         """
         embeddings = []
         for text in texts:
@@ -164,365 +158,608 @@ class OllamaEmbeddings(Embeddings):
         """
         为单个查询文本生成嵌入向量
         
-        参数：
-        ------
-        text: str - 要嵌入的查询文本（用户问题）
+        【调用场景】用户提问时，为查询语句生成向量用于相似度搜索
         
-        返回：
-        ------
-        List[float] - 文本对应的向量
+        【参数说明】
+        :param text: str - 查询文本
+        :return: List[float] - 嵌入向量（浮点数组）
         
-        调用者：
-        -------
-        Chroma.similarity_search() 内部调用（检索时）
+        【实现细节】
+        直接调用_get_embedding方法，适合单次查询场景。
         """
         return self._get_embedding(text)
 
     def _get_embedding(self, text: str) -> List[float]:
         """
-        调用Ollama嵌入API获取文本向量（私有方法）
+        调用嵌入API获取文本向量（核心私有方法）
         
-        参数：
-        ------
-        text: str - 要嵌入的文本
+        【功能说明】
+        根据配置的API格式，构建请求并解析响应，提取嵌入向量
         
-        返回：
-        ------
-        List[float] - 文本对应的向量（浮点数数组）
+        【参数说明】
+        :param text: str - 需要生成向量的文本
+        :return: List[float] - 嵌入向量
         
-        API调用详情：
-        ------------
-        - URL: {base_url}/api/embeddings
-        - 请求方法: POST
-        - 请求体: {"model": model_name, "prompt": text}
-        - 响应格式: {"embedding": [向量数组]}
-        
-        调用者：
-        -------
-        OllamaEmbeddings.embed_documents() 和 embed_query()
+        【异常处理】
+        捕获HTTP请求异常，打印错误信息后重新抛出RuntimeError
         """
-        url = f"{self.base_url}/api/embeddings"
-        payload = {
-            "model": self.model_name,
-            "prompt": text
-        }
+        if self.use_openai_format:
+            # OpenAI格式API调用
+            # URL构建：如果已包含/v1则直接使用，否则添加/v1前缀
+            url = f"{self.base_url}/embeddings" if "/v1" in self.base_url else f"{self.base_url}/v1/embeddings"
+            
+            # 请求体：符合OpenAI API规范
+            payload = {
+                "model": self.model_name,
+                "input": text
+            }
+            # bge-m3模型在OpenAI格式下需要特殊选项
+            if self.model_name == "bge-m3":
+                payload["options"] = {"embedding_only": True}
+            api_name = "OpenAI兼容"
+        else:
+            # Ollama原生格式API调用
+            url = f"{self.base_url}/api/embeddings"
+            payload = {
+                "model": self.model_name,
+                "prompt": text,
+                "options": {"embedding_only": False}  # bge-m3使用Ollama格式返回1024维向量
+            }
+            api_name = "Ollama"
         
-        # 调试日志：打印实际请求的URL和模型名称
-        print(f"DEBUG - 调用Ollama嵌入API:")
-        print(f"DEBUG -   URL: {url}")
-        print(f"DEBUG -   Model: {self.model_name}")
-        print(f"DEBUG -   Base URL: {self.base_url}")
+        # 构建请求头
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"  # OpenAI格式需要认证
+        headers["Content-Type"] = "application/json"
         
         try:
-            response = requests.post(url, json=payload, timeout=30)
-            response.raise_for_status()  # 检查HTTP错误（4xx/5xx）
+            # 发送POST请求，设置30秒超时（避免长时间阻塞）
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            
+            # 检查HTTP错误（如4xx客户端错误、5xx服务器错误）
+            response.raise_for_status()
+            
+            # 解析JSON响应
             result = response.json()
-            print(f"DEBUG - 嵌入API调用成功，向量维度: {len(result.get('embedding', []))}")
-            return result.get("embedding", [])
+            
+            # 根据API格式提取嵌入向量
+            if self.use_openai_format:
+                # OpenAI格式响应结构：{"data": [{"embedding": [0.1, 0.2, ...]}]}
+                embedding = result.get("data", [{}])[0].get("embedding", [])
+            else:
+                # Ollama格式响应处理
+                # bge-m3在embedding_only=False时返回{"embedding": {"dense": [...], "sparse": {...}}}
+                # 需要提取dense部分作为最终向量
+                raw_embedding = result.get("embedding", [])
+                if isinstance(raw_embedding, dict) and "dense" in raw_embedding:
+                    embedding = raw_embedding["dense"]
+                else:
+                    embedding = raw_embedding
+            
+            return embedding
+        
         except requests.exceptions.RequestException as e:
+            # 捕获所有HTTP请求异常（连接超时、DNS解析失败、HTTP错误等）
             print(f"ERROR - 嵌入API调用失败: {str(e)}")
-            raise RuntimeError(f"调用Ollama嵌入API失败: {str(e)}")
+            if hasattr(e.response, 'text'):
+                print(f"ERROR - 响应内容: {e.response.text}")
+            
+            # 重新抛出异常，让上层调用者处理
+            raise RuntimeError(f"调用{api_name}嵌入API失败: {str(e)}")
 
+# ==============================================================================
+# LocalEmbeddings类 - 本地离线模型嵌入向量生成器
+# ==============================================================================
+# 【设计目的】支持加载本地离线嵌入模型（如bge-small-zh-v1.5）
+# 【支持模型】基于Sentence Transformers格式的模型
+# 【核心特点】
+#   - 无需网络连接，完全离线运行
+#   - 支持从本地目录加载模型
+#   - 自动处理模型缓存和加载
+class LocalEmbeddings(Embeddings):
+    """
+    本地离线模型嵌入向量生成类
+    
+    【类字段说明】
+    - model_path: str - 本地模型目录路径
+    - model: SentenceTransformer - 加载的模型实例
+    - _initialized: bool - 模型是否已初始化
+    
+    【实现原理】
+    使用Sentence Transformers库加载本地模型，实现LangChain的Embeddings接口，
+    支持embed_documents和embed_query方法。
+    """
+
+    def __init__(self, model_path: str):
+        """
+        初始化本地模型嵌入向量生成器
+        
+        【参数说明】
+        :param model_path: str - 本地模型目录路径
+        """
+        self.model_path = model_path
+        self._initialized = False
+        self.model = None
+        # bge-small-zh-v1.5 使用归一化向量，提高相似度计算准确性
+        self.normalize_embeddings = True
+        
+        # 尝试预加载模型
+        self._load_model()
+
+    def _load_model(self):
+        """
+        加载本地模型（私有方法）
+        
+        【实现细节】
+        使用Sentence Transformers库加载本地模型，设置trust_remote_code=True以支持自定义模型
+        自动检测GPU，如果没有显卡则使用CPU
+        """
+        if self._initialized and self.model is not None:
+            return
+        
+        if not _HAS_SENTENCE_TRANSFORMERS:
+            raise ImportError("需要安装sentence_transformers库才能使用本地模型")
+        
+        # 自动检测设备（优先使用GPU）
+        try:
+            import torch
+            if torch.cuda.is_available():
+                device = "cuda"
+                print("【向量化】检测到GPU，使用CUDA加速")
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                device = "mps"
+                print("【向量化】检测到Apple Silicon，使用MPS加速")
+            else:
+                device = "cpu"
+                print("【向量化】未检测到GPU，使用CPU")
+        except ImportError:
+            device = "cpu"
+            print("【向量化】PyTorch未安装，使用CPU")
+        
+        try:
+            print(f"【向量化】正在加载本地模型: {self.model_path}")
+            self.model = SentenceTransformer(
+                self.model_path,
+                trust_remote_code=True,
+                device=device  # 指定设备
+            )
+            self._initialized = True
+            print(f"【向量化】本地模型加载成功")
+        except Exception as e:
+            print(f"ERROR - 加载本地模型失败: {str(e)}")
+            raise RuntimeError(f"加载本地模型失败: {str(e)}")
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """
+        批量为文档文本生成嵌入向量
+        
+        【调用场景】向向量数据库添加文档时，为每个文档片段生成向量
+        
+        【参数说明】
+        :param texts: List[str] - 需要生成向量的文本列表
+        :return: List[List[float]] - 向量列表，每个元素是一个浮点数组
+        
+        【实现细节】
+        使用 normalize_embeddings=True 对向量进行归一化，提高余弦相似度计算准确性
+        """
+        if not self._initialized:
+            self._load_model()
+        
+        # 使用 Sentence Transformers 批量生成向量
+        # convert_to_numpy=True: 返回 numpy 数组，便于转换为 Python 列表
+        # normalize_embeddings=True: 对向量进行归一化，使其成为单位向量
+        # 这样余弦相似度计算简化为向量点积，提高计算效率和准确性
+        embeddings = self.model.encode(
+            texts,
+            convert_to_numpy=True,  # 必须设置为 True，否则返回的是 PyTorch tensor
+            normalize_embeddings=self.normalize_embeddings
+        )
+        # 将 numpy 数组转换为普通 Python 浮点数列表
+        return [embedding.tolist() for embedding in embeddings]
+
+    def embed_query(self, text: str) -> List[float]:
+        """
+        为单个查询文本生成嵌入向量
+        
+        【调用场景】用户提问时，为查询语句生成向量用于相似度搜索
+        
+        【参数说明】
+        :param text: str - 查询文本
+        :return: List[float] - 嵌入向量（浮点数组）
+        
+        【实现细节】
+        使用 normalize_embeddings=True 对向量进行归一化，提高余弦相似度计算准确性
+        """
+        if not self._initialized:
+            self._load_model()
+        
+        # 使用 Sentence Transformers 生成向量
+        # convert_to_numpy=True: 返回 numpy 数组，便于转换为 Python 列表
+        # normalize_embeddings=True: 对向量进行归一化，使其成为单位向量
+        # 这样余弦相似度计算简化为向量点积，提高计算效率和准确性
+        embedding = self.model.encode(
+            text,
+            convert_to_numpy=True,  # 必须设置为 True，否则返回的是 PyTorch tensor
+            normalize_embeddings=self.normalize_embeddings
+        )
+        # 将 numpy 数组转换为普通 Python 浮点数列表
+        return embedding.tolist()
+
+# ==============================================================================
+# VectorStoreManager类 - 向量存储管理器（单例模式）
+# ==============================================================================
+# 【设计模式】单例模式（Singleton）
+# 【设计目的】确保整个应用只有一个ChromaDB连接和嵌入函数实例，
+#           避免重复创建连接，优化资源使用。
+# 
+# 【核心字段】
+#   - _instance: 类属性，存储唯一实例
+#   - _initialized: 标记是否已初始化数据库连接
+#   - chroma_client: ChromaDB持久化客户端
+#   - embedding_function: OllamaEmbeddings实例
 class VectorStoreManager:
     """
-    向量数据库管理器类（单例模式）
+    向量存储管理器（单例模式）
     
-    核心职责：
-    --------
-    - 管理ChromaDB向量数据库的连接和初始化
-    - 将文本片段转换为向量并存储
-    - 根据用户问题进行相似度搜索
-    - 管理文档列表和删除操作
+    【功能职责】
+    1. 管理ChromaDB数据库连接（延迟初始化）
+    2. 管理嵌入函数实例（按需创建）
+    3. 提供文档添加、相似度搜索、集合管理等核心功能
     
-    字段说明：
-    --------
-    - _instance: VectorStoreManager - 单例实例（类属性）
-    - _initialized: bool - 是否已初始化数据库连接
-    - chroma_client: chromadb.PersistentClient - ChromaDB持久化客户端
-    - embedding_function: OllamaEmbeddings - 嵌入函数实例（延迟初始化）
-    
-    设计模式：
-    --------
-    - 单例模式：确保整个应用只有一个数据库连接
-    - 延迟初始化：嵌入函数在第一次使用时创建
-    
-    调用者：
-    -------
-    - rag_engine.py: 检索文档
-    - main.py: 上传/删除文档、获取文件列表
-    
-    配置依赖：
-    --------
-    - CHROMA_DB_PATH: 数据库存储路径（默认./chroma_db）
-    - OLLAMA_API_BASE: Ollama API地址
-    - EMBEDDING_MODEL: 嵌入模型名称
+    【使用方式】
+    from core.vector_store import vector_store_manager
+    vector_store = vector_store_manager.get_vector_store()
     """
     
-    # 单例实例（类属性）
-    _instance = None
-    # 是否已初始化数据库连接
-    _initialized: bool = False
-    # ChromaDB持久化客户端
-    chroma_client: Optional[chromadb.PersistentClient] = None
-    # 嵌入函数实例（延迟初始化）
-    embedding_function: Optional[OllamaEmbeddings] = None
+    _instance = None                          # 单例实例（类级别的共享变量）
+    _initialized: bool = False                # 数据库连接初始化标记
+    chroma_client: Optional[chromadb.PersistentClient] = None  # ChromaDB客户端
+    embedding_function: Optional[Embeddings] = None             # 嵌入函数实例（支持OllamaEmbeddings和LocalEmbeddings）
     
     def __new__(cls) -> 'VectorStoreManager':
         """
-        实现单例模式，确保整个应用只有一个向量数据库连接
+        实现单例模式的核心方法
         
-        返回：
-        ------
-        VectorStoreManager: 唯一的单例实例
+        【设计原理】
+        重写__new__方法，确保首次调用时创建实例，后续调用返回同一实例。
         
-        单例实现逻辑：
-        ------------
-        1. 检查类属性 _instance 是否为 None
-        2. 如果为 None，创建新实例并初始化状态
-        3. 返回已存在的实例或新创建的实例
+        :return: VectorStoreManager - 唯一的单例实例
         """
         if cls._instance is None:
+            # 首次调用，创建新实例
             cls._instance = super(VectorStoreManager, cls).__new__(cls)
+            # 初始化实例状态
             cls._instance._initialized = False
             cls._instance.chroma_client = None
             cls._instance.embedding_function = None
+        # 返回已存在的实例（或刚创建的实例）
         return cls._instance
     
     def initialize(self) -> None:
         """
-        初始化向量数据库连接（延迟初始化）
+        初始化ChromaDB数据库连接（延迟初始化）
         
-        【UPLOAD_FLOW-8】被 VectorStoreManager.get_vector_store() 调用
-        【QUERY_FLOW-4.1】被 VectorStoreManager.get_vector_store() 调用
+        【调用时机】
+        首次调用get_vector_store时自动触发，避免应用启动时就建立数据库连接
         
-        执行逻辑：
-        --------
-        【UPLOAD_FLOW-8.1 / QUERY_FLOW-4.1.1】检查是否已初始化
-        【UPLOAD_FLOW-8.2 / QUERY_FLOW-4.1.2】如果未初始化，创建ChromaDB持久化客户端
-        【UPLOAD_FLOW-8.3 / QUERY_FLOW-4.1.3】设置数据库存储路径和配置
-        
-        注意：
-        ------
-        - 嵌入函数会在第一次实际使用时（调用get_vector_store）才初始化
-        - 这样可以避免服务器启动时下载嵌入模型失败
-        
-        配置参数：
-        --------
-        - path: 数据库文件存储路径，从环境变量CHROMA_DB_PATH读取，默认./chroma_db
-        - anonymized_telemetry: 是否启用匿名遥测，默认False
-        
-        调用者：
-        -------
-        VectorStoreManager.get_vector_store() 内部调用
+        【实现细节】
+        使用chromadb.PersistentClient创建持久化连接，数据存储在本地文件系统
+        默认路径为./chroma_db，可通过CHROMA_DB_PATH环境变量配置
         """
         if not self._initialized:
-            # 【UPLOAD_FLOW-8.2 / QUERY_FLOW-4.1.2】创建ChromaDB持久化客户端
             self.chroma_client = chromadb.PersistentClient(
                 path=os.getenv("CHROMA_DB_PATH", "./chroma_db"),
-                settings=Settings(
-                    anonymized_telemetry=False  # 禁用匿名遥测
-                )
+                settings=Settings(anonymized_telemetry=False)  # 禁用匿名遥测数据
             )
-            # 【UPLOAD_FLOW-8.3 / QUERY_FLOW-4.1.3】标记为已初始化
             self._initialized = True
     
-    def _init_embedding(self) -> None:
+    def _init_embedding(self, llm_api_base: str = None, llm_api_key: str = None, 
+                        llm_model_name: str = None, use_local_ollama: bool = None) -> None:
         """
         初始化嵌入函数（延迟加载，私有方法）
         
-        【UPLOAD_FLOW-9】被 VectorStoreManager.get_vector_store() 调用
-        【QUERY_FLOW-4.2】被 VectorStoreManager.get_vector_store() 调用
+        【调用时机】
+        每次调用get_vector_store时触发，检查是否需要重新创建嵌入函数
         
-        设计意图：
-        --------
-        只有在实际需要向量化时才创建嵌入函数，这样可以：
-        1. 避免服务器启动时下载模型失败
-        2. 允许用户先配置系统，再进行文档上传
-        3. 节省内存资源
+        【设计目的】
+        根据配置动态创建嵌入函数实例，支持运行时切换模型和API配置
         
-        实现逻辑：
-        --------
-        【UPLOAD_FLOW-9.1 / QUERY_FLOW-4.2.1】检查嵌入函数是否已初始化
-        【UPLOAD_FLOW-9.2 / QUERY_FLOW-4.2.2】如果未初始化，创建OllamaEmbeddings实例
-        【UPLOAD_FLOW-9.3 / QUERY_FLOW-4.2.3】从环境变量获取嵌入模型名称
+        【配置逻辑】
+        1. 如果 backend/config.py 可用，优先使用 Config 类的配置
+        2. 如果未配置大模型，自动使用 bge-small-zh-v1.5 离线版作为默认嵌入模型
+        3. 如果已配置大模型，使用大模型的配置作为嵌入模型
+        4. 支持本地离线模型和远程API两种模式
         
-        配置优先级：
-        ----------
-        1. EMBEDDING_MODEL 环境变量
-        2. LLM_MODEL_NAME 环境变量
-        3. 默认值 "qwen2.5:7b-instruct"
-        
-        调用者：
-        -------
-        VectorStoreManager.get_vector_store() 内部调用
+        【参数说明】
+        :param llm_api_base: LLM API地址（用于兼容旧接口）
+        :param llm_api_key: LLM API密钥（用于兼容旧接口）
+        :param llm_model_name: LLM模型名称（用于兼容旧接口）
+        :param use_local_ollama: 是否使用本地Ollama服务
         """
+        
+        # 配置变量
+        use_local = False
+        local_model_path = None
+        api_base = None
+        api_key = ""
+        model_name = "bge-small-zh-v1.5"
+        api_format = "local"
+        
+        # 优先使用 backend/config.py 的配置（如果可用）
+        if _USE_BACKEND_CONFIG and _config is not None:
+            # 使用新的配置系统
+            embedding_config = _config.get_embedding_config()
+            api_base = embedding_config.get("api_base")
+            api_key = embedding_config.get("api_key", "")
+            model_name = embedding_config["model_name"]
+            api_format = embedding_config["api_format"]
+            use_local = embedding_config.get("use_local", False)
+            local_model_path = embedding_config.get("local_model_path")
+            
+            # 打印配置来源（嵌入模型始终使用本地 bge-small-zh-v1.5）
+            print(f"【配置】嵌入模型: {model_name} (本地离线模型)")
+            if _config.is_llm_configured():
+                llm_config = _config.get_llm_config()
+                print(f"【配置】大模型: {llm_config['model_name']} (用于回答生成)")
+            else:
+                print(f"【配置】大模型: 未配置 (将直接返回检索结果)")
+        else:
+            # 使用传统的环境变量配置（向后兼容）
+            # 1. 确定是否使用本地模型
+            use_local_env = os.getenv("USE_LOCAL_EMBEDDING", "false").lower()
+            use_local = use_local_env == "true"
+            
+            if use_local:
+                # 使用本地模型
+                api_format = "local"
+                local_model_path = os.getenv("LOCAL_MODEL_PATH", "./backend/models/bge-small-zh-v1.5")
+                model_name = "bge-small-zh-v1.5"
+                print("【配置】使用本地离线模型")
+            else:
+                # 使用远程API
+                # 1. 确定API地址
+                embed_api_base = os.getenv("EMBEDDING_API_BASE")
+                if embed_api_base:
+                    api_base = embed_api_base
+                elif llm_api_base:
+                    api_base = llm_api_base
+                else:
+                    api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+                
+                # 2. 确定API密钥
+                embed_api_key = os.getenv("EMBEDDING_API_KEY")
+                if embed_api_key:
+                    api_key = embed_api_key
+                elif llm_api_key:
+                    api_key = llm_api_key
+                else:
+                    api_key = os.getenv("LLM_API_KEY", "")
+                
+                # 3. 确定模型名称（默认使用 bge-small-zh-v1.5）
+                embed_model_name = os.getenv("EMBEDDING_MODEL")
+                if embed_model_name:
+                    model_name = embed_model_name
+                elif llm_model_name:
+                    model_name = llm_model_name
+                else:
+                    model_name = os.getenv("LLM_MODEL_NAME", "bge-small-zh-v1.5")
+                
+                # 4. 确定API格式
+                llm_api_base_env = os.getenv("LLM_API_BASE", "")
+                if "/v1" in llm_api_base_env:
+                    api_format = "openai"
+                else:
+                    api_format = "ollama"
+        
+        # 判断是否需要重新创建嵌入函数
+        need_recreate = False
+        current_config_hash = None
+        
         if self.embedding_function is None:
-            # 【UPLOAD_FLOW-9.2 / QUERY_FLOW-4.2.2】从环境变量获取嵌入模型名称
-            embed_model_name = os.getenv("EMBEDDING_MODEL", os.getenv("LLM_MODEL_NAME", "qwen2.5:7b-instruct"))
-            # 【UPLOAD_FLOW-9.3 / QUERY_FLOW-4.2.3】创建Ollama嵌入函数实例
-            self.embedding_function = OllamaEmbeddings(model_name=embed_model_name)
+            # 嵌入函数尚未创建，需要初始化
+            need_recreate = True
+        else:
+            # 检查现有配置是否变化
+            # 对于本地模型，比较模型路径
+            if use_local:
+                current_path = getattr(self.embedding_function, 'model_path', None)
+                need_recreate = current_path != local_model_path
+            else:
+                # 对于远程API，比较API地址、密钥、模型名称
+                current_base = getattr(self.embedding_function, 'base_url', None)
+                current_key = getattr(self.embedding_function, 'api_key', None)
+                current_model = getattr(self.embedding_function, 'model_name', None)
+                
+                need_recreate = (api_base and current_base != api_base.rstrip('/')) or \
+                               (api_key and current_key != api_key) or \
+                               (current_model != model_name)
+        
+        # 创建或更新嵌入函数实例
+        if need_recreate:
+            if use_local and local_model_path:
+                # 使用本地离线模型
+                print(f"【向量化】初始化本地嵌入模型 - 路径: {local_model_path}")
+                self.embedding_function = LocalEmbeddings(model_path=local_model_path)
+            else:
+                # 使用远程API模型
+                print(f"【向量化】初始化远程嵌入函数 - API: {api_base}, Model: {model_name}, Format: {api_format}")
+                self.embedding_function = OllamaEmbeddings(
+                    model_name=model_name,
+                    api_base=api_base,
+                    api_key=api_key,
+                    api_format=api_format
+                )
     
-    def get_vector_store(self, collection_name: str = "documents") -> Chroma:
+    def get_vector_store(self, collection_name: str = "documents", 
+                         llm_api_base: str = None, llm_api_key: str = None, 
+                         llm_model_name: str = None, use_local_ollama: bool = False) -> Chroma:
         """
         获取或创建向量集合（主入口方法）
         
-        【UPLOAD_FLOW-7】被 VectorStoreManager.add_documents() 调用
-        【QUERY_FLOW-4】被 RAGEngine.query() 调用
-        【QUERY_FLOW-5】被 VectorStoreManager.similarity_search() 调用
+        【功能说明】
+        返回指定名称的Chroma向量存储对象，如果集合不存在则自动创建
         
-        参数：
-        ------
-        collection_name: str - 集合名称，用于区分不同类型的文档，默认为"documents"
+        【参数说明】
+        :param collection_name: str - 集合名称，默认"documents"
+        :param llm_api_base: str - LLM API地址（兼容参数）
+        :param llm_api_key: str - LLM API密钥（兼容参数）
+        :param llm_model_name: str - LLM模型名称（兼容参数）
+        :param use_local_ollama: bool - 是否使用本地Ollama，默认False
+        :return: Chroma - LangChain的Chroma向量存储对象
         
-        返回：
-        ------
-        Chroma - LangChain的Chroma向量存储对象，提供添加文档和相似性搜索功能
-        
-        执行流程：
-        --------
-        【UPLOAD_FLOW-7.1 / QUERY_FLOW-4.1】延迟初始化数据库连接（如果未初始化）
-        【UPLOAD_FLOW-7.2 / QUERY_FLOW-4.2】延迟初始化嵌入函数（如果未初始化）
-        【UPLOAD_FLOW-7.3 / QUERY_FLOW-4.3】尝试获取已存在的集合，不存在则创建
-        【UPLOAD_FLOW-7.4 / QUERY_FLOW-4.4】返回Chroma向量存储对象
-        
-        调用关系：
-        --------
-        - 【调用 UPLOAD_FLOW-8 / QUERY_FLOW-4.1】VectorStoreManager.initialize() 初始化数据库连接
-        - 【调用 UPLOAD_FLOW-9 / QUERY_FLOW-4.2】VectorStoreManager._init_embedding() 初始化嵌入函数
-        
-        调用者：
-        -------
-        - VectorStoreManager.add_documents()
-        - VectorStoreManager.similarity_search()
-        - RAGEngine.query()
+        【调用流程】
+        1. 检查数据库连接是否初始化
+        2. 初始化嵌入函数
+        3. 获取或创建集合
+        4. 返回Chroma向量存储对象
         """
-        # 【UPLOAD_FLOW-7.1 / QUERY_FLOW-4.1】延迟初始化数据库连接
+        
+        # 步骤1：延迟初始化数据库连接
         if not self._initialized:
-            # 【调用 UPLOAD_FLOW-8 / QUERY_FLOW-4.1】VectorStoreManager.initialize()
             self.initialize()
         
-        # 【UPLOAD_FLOW-7.2 / QUERY_FLOW-4.2】延迟初始化嵌入函数
-        # 【调用 UPLOAD_FLOW-9 / QUERY_FLOW-4.2】VectorStoreManager._init_embedding()
-        self._init_embedding()
+        # 步骤2：初始化嵌入函数（按需创建）
+        self._init_embedding(llm_api_base=llm_api_base, llm_api_key=llm_api_key, 
+                            llm_model_name=llm_model_name, use_local_ollama=use_local_ollama)
         
-        # 【UPLOAD_FLOW-7.3 / QUERY_FLOW-4.3】获取或创建集合
+        # 步骤3：获取或创建集合
         try:
             # 尝试获取已存在的集合
-            self.chroma_client.get_collection(name=collection_name)  # type: ignore
+            self.chroma_client.get_collection(name=collection_name)
         except Exception:
-            # 如果集合不存在，则创建一个新的
-            self.chroma_client.create_collection(name=collection_name)  # type: ignore
+            # 集合不存在，创建新集合
+            self.chroma_client.create_collection(name=collection_name)
         
-        # 【UPLOAD_FLOW-7.4 / QUERY_FLOW-4.4】创建并返回Chroma向量存储对象
+        # 步骤4：返回Chroma向量存储对象（封装了集合和嵌入函数）
         return Chroma(
-            client=self.chroma_client,           # ChromaDB客户端实例
-            collection_name=collection_name,       # 集合名称
-            embedding_function=self.embedding_function  # 嵌入函数
+            client=self.chroma_client,
+            collection_name=collection_name,
+            embedding_function=self.embedding_function
         )
     
-    def add_documents(self, documents: List[Document], collection_name: str = "documents") -> None:
+    def add_documents(self, documents: List[Document], collection_name: str = "documents", 
+                      progress_callback=None, llm_api_base: str = None, 
+                      llm_api_key: str = None, llm_model_name: str = None,
+                      use_local_ollama: bool = False) -> None:
         """
-        向向量数据库添加文档
+        向向量数据库添加文档（分批处理）
         
-        【UPLOAD_FLOW-6】被 main.py upload_file() 调用
+        【功能说明】
+        将文档列表转换为向量并存储到指定集合，支持进度回调
         
-        参数：
-        ------
-        documents: List[Document] - LangChain的Document对象列表，每个Document包含：
-            - page_content: str - 文档文本内容
-            - metadata: dict - 元数据（如来源文件名、片段ID等）
-        collection_name: str - 要添加到的集合名称，默认为"documents"
+        【参数说明】
+        :param documents: List[Document] - LangChain Document对象列表
+        :param collection_name: str - 目标集合名称，默认"documents"
+        :param progress_callback: Callable - 进度回调函数，签名：(current, total, message)
+        :param llm_api_base: str - LLM API地址（兼容参数）
+        :param llm_api_key: str - LLM API密钥（兼容参数）
+        :param llm_model_name: str - LLM模型名称（兼容参数）
+        :param use_local_ollama: bool - 是否使用本地Ollama，默认False
         
-        执行流程：
-        --------
-        【UPLOAD_FLOW-6.1】获取或创建指定名称的向量集合
-        【UPLOAD_FLOW-6.2】使用embedding_function将每个文档的文本转换成向量
-        【UPLOAD_FLOW-6.3】将向量和文档内容存储到ChromaDB
-        
-        调用关系：
-        --------
-        - 【调用 UPLOAD_FLOW-7】VectorStoreManager.get_vector_store() 获取向量存储
-        
-        调用者：
-        -------
-        main.py 的 upload_file 接口
-        
-        注意：
-        ------
-        - 文档会自动被向量化并存储
-        - 元数据会被保留，用于后续检索时显示来源
+        【实现细节】
+        - 分批处理：每批20个文档，避免一次性处理过多数据
+        - 进度更新：每批处理完成后调用回调函数通知进度
+        - 日志输出：打印处理进度信息
         """
-        # 【调用 UPLOAD_FLOW-7】VectorStoreManager.get_vector_store(collection_name)
-        vector_store = self.get_vector_store(collection_name)
-        # 添加文档到向量存储
-        vector_store.add_documents(documents)
+        
+        total_docs = len(documents)
+        print(f"【向量化】开始向量化，共 {total_docs} 个文档")
+        
+        # 通知开始（如果有回调函数）
+        if progress_callback:
+            progress_callback(0, total_docs, "开始向量化...")
+        
+        # 获取向量存储对象
+        vector_store = self.get_vector_store(collection_name, llm_api_base=llm_api_base, 
+                                            llm_api_key=llm_api_key, llm_model_name=llm_model_name,
+                                            use_local_ollama=use_local_ollama)
+        
+        # 分批添加文档（固定每批20个）
+        batch_size = 20
+        
+        # 遍历处理每一批
+        for i in range(0, total_docs, batch_size):
+            # 截取当前批次的文档
+            batch = documents[i:i+batch_size]
+            # 将批次文档添加到向量数据库（内部会自动调用嵌入函数生成向量）
+            vector_store.add_documents(batch)
+            
+            # 更新进度（如果有回调函数）
+            if progress_callback:
+                current = min(i + batch_size, total_docs)
+                progress_callback(current, total_docs, f"正在向量化... {current}/{total_docs}")
+                print(f"【向量化】进度回调: {current}/{total_docs}")
+        
+        # 通知完成（如果有回调函数）
+        if progress_callback:
+            progress_callback(total_docs, total_docs, "向量化完成")
+            print(f"【向量化】进度回调: {total_docs}/{total_docs} (完成)")
+        
+        print(f"【向量化】向量化完成")
     
-    def similarity_search(self, query: str, k: int = 3, collection_name: str = "documents") -> List[Document]:
+    def similarity_search(self, query: str, k: int = 3, collection_name: str = "documents",
+                         llm_api_base: str = None, llm_api_key: str = None, 
+                         llm_model_name: str = None, use_local_ollama: bool = False) -> List[Document]:
         """
-        执行相似性搜索（向量检索）
+        执行语义相似度搜索
         
-        【QUERY_FLOW-5】被 RAGEngine.query() 调用
+        【功能说明】
+        将查询文本转换为向量，在向量数据库中查找最相似的k个文档
         
-        参数：
-        ------
-        query: str - 搜索查询文本（用户的问题）
-        k: int - 返回最相似的文档数量，默认为3
-        collection_name: str - 要搜索的集合名称，默认为"documents"
+        【参数说明】
+        :param query: str - 查询文本
+        :param k: int - 返回结果数量，默认3
+        :param collection_name: str - 集合名称，默认"documents"
+        :param llm_api_base: str - LLM API地址（兼容参数）
+        :param llm_api_key: str - LLM API密钥（兼容参数）
+        :param llm_model_name: str - LLM模型名称（兼容参数）
+        :param use_local_ollama: bool - 是否使用本地Ollama，默认False
+        :return: List[Document] - 匹配的文档列表（按相似度降序排列）
         
-        返回：
-        ------
-        List[Document] - 与查询最相关的k个Document对象列表，按相似度降序排列
+        【检索原理】
+        1. 将查询文本转换为嵌入向量
+        2. 使用余弦相似度算法计算与库中所有向量的相似度
+        3. 返回相似度最高的前k个文档
         
-        执行流程：
-        --------
-        【QUERY_FLOW-5.1】使用embedding_function将query文本转换成向量
-        【QUERY_FLOW-5.2】在ChromaDB中计算query向量与所有文档向量的余弦相似度
-        【QUERY_FLOW-5.3】返回相似度最高的k个文档
-        
-        调用关系：
-        --------
-        - 【调用 QUERY_FLOW-4】VectorStoreManager.get_vector_store() 获取向量存储
-        
-        调用者：
-        -------
-        RAGEngine.query() 方法
-        
-        检索原理：
-        --------
-        - 使用余弦相似度衡量向量之间的相似性
-        - 返回的文档按相似度从高到低排列
-        - 相似度分数越高，表示文档与查询越相关
+        【应用场景】
+        RAG问答场景：用户提问时，检索相关文档作为上下文
         """
-        # 【调用 QUERY_FLOW-4】VectorStoreManager.get_vector_store(collection_name)
-        vector_store = self.get_vector_store(collection_name)
-        # 【QUERY_FLOW-5.3】执行相似性搜索
+        
+        # 获取向量存储对象
+        vector_store = self.get_vector_store(collection_name, llm_api_base=llm_api_base, 
+                                            llm_api_key=llm_api_key, llm_model_name=llm_model_name,
+                                            use_local_ollama=use_local_ollama)
+        
+        # 执行相似度搜索
         return vector_store.similarity_search(query, k=k)
     
     def delete_collection(self, collection_name: str = "documents") -> bool:
         """
-        删除整个向量集合（相当于删除数据库中的表）
+        删除整个向量集合（谨慎使用）
         
-        参数：
-        ------
-        collection_name: str - 要删除的集合名称，默认为"documents"
+        【功能说明】
+        删除指定名称的集合及其所有数据，此操作不可恢复
         
-        返回：
-        ------
-        bool - 是否成功删除
+        【参数说明】
+        :param collection_name: str - 要删除的集合名称，默认"documents"
+        :return: bool - 删除是否成功
         
-        调用者：
-        -------
-        main.py 的 /api/clear-vectors 接口
+        【返回值含义】
+        - True: 删除成功
+        - False: 删除失败（如集合不存在或权限不足）
         
-        注意：
-        ------
-        - 此操作会删除集合中的所有文档，谨慎使用
-        - 删除后无法恢复
+        【调用场景】
+        数据清理、重新初始化、更换嵌入模型时使用
         """
+        
+        # 确保数据库连接已初始化
         if not self._initialized:
             self.initialize()
+        
         try:
-            self.chroma_client.delete_collection(name=collection_name)  # type: ignore
+            # 删除集合
+            self.chroma_client.delete_collection(name=collection_name)
             return True
         except Exception as e:
             print(f"删除集合失败: {e}")
@@ -532,76 +769,80 @@ class VectorStoreManager:
         """
         获取所有向量集合的名称列表
         
-        返回：
-        ------
-        List[str] - 所有集合名称组成的列表
+        【功能说明】
+        返回数据库中所有已创建的集合名称
         
-        调用者：
-        -------
-        主要用于调试和管理
+        :return: List[str] - 集合名称列表
+        
+        【应用场景】
+        - 管理界面展示所有集合
+        - 调试和监控
         """
+        
         if not self._initialized:
             self.initialize()
-        return [col.name for col in self.chroma_client.list_collections()]  # type: ignore
+        
+        # 遍历所有集合并提取名称
+        return [col.name for col in self.chroma_client.list_collections()]
     
     def get_all_documents(self, collection_name: str = "documents") -> List[Document]:
         """
         获取集合中的所有文档
         
-        参数：
-        ------
-        collection_name: str - 集合名称，默认为"documents"
+        【功能说明】
+        返回指定集合中的所有文档数据（包含内容和元数据）
         
-        返回：
-        ------
-        List[Document] - 所有Document对象列表
+        :param collection_name: str - 集合名称，默认"documents"
+        :return: List[Document] - 文档列表
         
-        调用者：
-        -------
-        主要用于调试和数据导出
+        【应用场景】
+        - 数据导出
+        - 调试和验证
+        - 数据备份
+        
+        【注意事项】
+        强制使用本地bge-m3模型确保兼容性
         """
+        
         if not self._initialized:
             self.initialize()
-        self._init_embedding()
         
-        vector_store = self.get_vector_store(collection_name)
+        # 强制使用本地bge-m3模型
+        self._init_embedding(use_local_ollama=True)
+        
+        # 获取向量存储并返回所有文档
+        vector_store = self.get_vector_store(collection_name, use_local_ollama=True)
         return vector_store.get()
     
     def list_uploaded_files(self, collection_name: str = "documents") -> List[dict]:
         """
         获取已上传文件列表及其片段数量
         
-        参数：
-        ------
-        collection_name: str - 集合名称，默认为"documents"
+        【功能说明】
+        统计每个源文件在向量数据库中的文档片段数量
         
-        返回：
-        ------
-        List[dict] - 文件列表，每个元素包含:
-            - source: str - 文件名
-            - chunks: int - 该文件的片段数量
+        :param collection_name: str - 集合名称，默认"documents"
+        :return: List[dict] - 包含{"source": 文件名, "chunks": 片段数}的列表
         
-        执行逻辑：
-        --------
-        1. 获取集合中的所有文档元数据
-        2. 按source字段（文件名）分组统计片段数量
-        3. 返回文件列表
+        【实现原理】
+        1. 获取集合中所有文档的元数据
+        2. 按source字段（文件名）分组统计
+        3. 返回统计结果
         
-        调用者：
-        -------
-        main.py 的 /api/uploaded-files 接口
-        
-        用途：
-        ------
-        供前端展示已上传的文件列表
+        【应用场景】
+        管理界面展示已上传文件列表和处理状态
         """
+        
         if not self._initialized:
             self.initialize()
         
         try:
-            collection = self.chroma_client.get_collection(name=collection_name)  # type: ignore
+            # 获取集合
+            collection = self.chroma_client.get_collection(name=collection_name)
+            # 获取所有文档的元数据
             all_data = collection.get(include=["metadatas"])
             
+            # 检查数据有效性
             if not all_data or "metadatas" not in all_data:
                 return []
             
@@ -614,6 +855,7 @@ class VectorStoreManager:
                         file_chunks[source] = 0
                     file_chunks[source] += 1
             
+            # 转换为列表格式返回
             return [
                 {"source": source, "chunks": count}
                 for source, count in file_chunks.items()
@@ -622,69 +864,95 @@ class VectorStoreManager:
             print(f"获取文件列表失败: {e}")
             return []
     
-    def delete_file_chunks(self, filename: str, collection_name: str = "documents") -> bool:
+    def delete_file_chunks(self, filename: str, collection_name: str = "documents") -> tuple:
         """
         删除指定文件名的所有向量数据片段
         
-        参数：
-        ------
-        filename: str - 要删除的文件名（不含路径）
-        collection_name: str - 集合名称，默认为"documents"
+        【功能说明】
+        删除与指定文件相关的所有向量记录，支持精确匹配和模糊匹配
         
-        返回：
-        ------
-        bool - 是否成功删除
+        【参数说明】
+        :param filename: str - 要删除的文件名
+        :param collection_name: str - 集合名称，默认"documents"
+        :return: tuple - (是否删除成功, 是否执行了删除操作)
         
-        执行逻辑：
-        --------
-        1. 获取集合中的所有文档及其元数据
-        2. 筛选出source字段匹配filename的文档ID
-        3. 删除这些文档的向量数据
+        【返回值含义】
+        - (True, True): 成功删除了数据
+        - (True, False): 没有可删除的数据（集合/文件不存在）
+        - (False, _): 删除操作失败
         
-        调用者：
-        -------
-        main.py 的 DELETE /api/files/{filename} 接口
+        【匹配规则】
+        支持三种匹配方式：
+        1. 精确匹配：source == filename
+        2. 文件名包含：filename in source
+        3. 包含文件名：source in filename
         
-        用途：
-        ------
-        删除文件时同时清理向量数据库中的相关数据
+        【应用场景】
+        用户删除上传的文件时，同步删除对应的向量数据
         """
+        
         if not self._initialized:
             self.initialize()
         
         try:
-            collection = self.chroma_client.get_collection(name=collection_name)  # type: ignore
+            # 获取所有集合名称
+            collections = self.chroma_client.list_collections()
+            collection_names = [col.name for col in collections]
+            
+            # 检查集合是否存在
+            if collection_name not in collection_names:
+                print(f"【删除】集合不存在，跳过向量数据删除")
+                return (True, False)  # 成功，但没有执行删除
+            
+            # 获取集合对象
+            collection = self.chroma_client.get_collection(name=collection_name)
+            # 获取所有文档的ID和元数据
             all_data = collection.get(include=["metadatas", "documents"])
             
-            if not all_data or "ids" not in all_data:
-                return True  # 没有数据可删，视为成功
+            # 检查数据有效性
+            if not all_data or "ids" not in all_data or len(all_data["ids"]) == 0:
+                print(f"【删除】集合为空，文件名: {filename}")
+                return (True, False)  # 成功，但没有数据可删
+            
+            print(f"【删除】开始处理，总文档数: {len(all_data['ids'])}，文件名: {filename}")
             
             # 筛选出需要删除的文档ID
             ids_to_delete = []
             for i, metadata in enumerate(all_data["metadatas"]):
-                if metadata and metadata.get("source") == filename:
-                    ids_to_delete.append(all_data["ids"][i])
+                if metadata and "source" in metadata:
+                    source = metadata["source"]
+                    # 支持精确匹配和模糊匹配
+                    if source == filename or filename in source or source in filename:
+                        ids_to_delete.append(all_data["ids"][i])
+                        print(f"【删除】匹配到文档: {source}")
             
-            # 执行删除
+            # 执行删除操作
             if ids_to_delete:
+                print(f"【删除】准备删除 {len(ids_to_delete)} 个文档")
                 collection.delete(ids=ids_to_delete)
-            
-            return True
+                print(f"【删除】成功删除 {len(ids_to_delete)} 个文档")
+                return (True, True)  # 成功删除了数据
+            else:
+                print(f"【删除】向量数据不存在，文件名: {filename}")
+                return (True, False)  # 成功，但没有找到匹配的文档
+        
         except Exception as e:
-            print(f"删除文件向量数据失败: {e}")
-            return False
+            print(f"【删除】失败: {e}")
+            return (False, False)
 
-# ========== 全局单例实例 ==========
-"""
-创建全局向量存储管理器实例，供其他模块导入使用
-
-使用方式：
---------
-from core.vector_store import vector_store_manager
-
-设计意图：
---------
-- 确保整个应用只有一个向量数据库连接
-- 简化调用方式，无需每次创建实例
-"""
+# ==============================================================================
+# 全局向量存储管理器实例
+# ==============================================================================
+# 【使用方式】
+# from core.vector_store import vector_store_manager
+# 
+# # 获取向量存储
+# vector_store = vector_store_manager.get_vector_store()
+# 
+# # 添加文档
+# vector_store_manager.add_documents(documents)
+# 
+# # 相似度搜索
+# results = vector_store_manager.similarity_search("你的问题")
+# ==============================================================================
 vector_store_manager: VectorStoreManager = VectorStoreManager()

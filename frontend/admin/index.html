@@ -256,6 +256,39 @@
             border-radius: 8px;
             margin-bottom: 20px;
             display: none;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 4px;
+            background: #ddd;
+            border-radius: 2px;
+            margin-top: 12px;
+            overflow: hidden;
+            display: none;
+        }
+
+        .progress-bar.show {
+            display: block;
+        }
+
+        .progress-bar .progress {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .progress-text {
+            font-size: 12px;
+            color: #666;
+            margin-top: 8px;
+            display: none;
+        }
+
+        .progress-text.show {
+            display: block;
         }
         
         .alert.success {
@@ -426,6 +459,12 @@
         
         <div id="upload-tab" class="card">
             <h2>上传文档</h2>
+            <div class="model-info" style="background: #f0f0ff; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-weight: 500; color: #667eea;">向量化模型:</span>
+                    <span id="embedding-model-display" style="background: white; padding: 5px 12px; border-radius: 4px; font-family: monospace;"></span>
+                </div>
+            </div>
             <div class="upload-area" id="upload-area">
                 <div class="icon">📁</div>
                 <div class="text">点击或拖拽文件到此处上传</div>
@@ -434,6 +473,10 @@
             </div>
             
             <div class="alert" id="upload-alert"></div>
+            <div class="progress-bar" id="upload-progress">
+                <div class="progress" id="progress-fill"></div>
+            </div>
+            <div class="progress-text" id="progress-text"></div>
         </div>
         
         <div id="manage-tab" class="card" style="display: none;">
@@ -500,53 +543,57 @@
     </div>
 
     <script>
+        // API_BASE: 后端API基础地址，所有请求都基于此地址
         const API_BASE = '/api';
+
+        // 【调用者】用户点击标签页时（HTML onclick="showTab('tabName')"）
+        // 【功能】切换显示的标签页内容
         
+        // 【参数】tabName: 标签页名称（config/manage/vector）
         function showTab(tabName) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.card').forEach(c => c.style.display = 'none');
-            
+
             event.target.classList.add('active');
             document.getElementById(tabName + '-tab').style.display = 'block';
-            
-            if (tabName === 'config') {
-                // 加载配置的同时也加载模型列表（包括线上和本地）
+
+            if (tabName === 'config') {             // 切换到配置页：加载模型列表和配置
                 loadModels();
                 loadConfig();
             }
 
-            if (tabName === 'manage') {
-                // 文件管理标签页加载文件列表
+            if (tabName === 'manage') {             // 切换到管理页：加载文件列表
                 loadUploadedFiles();
             }
         }
 
+        // 【调用者】showTab()、页面加载完成时
+        // 【功能】从后端获取已上传文件列表并渲染到页面
+        // 【调用API】GET /api/uploaded-files
+        // 【返回数据】{success, files: [{filename, size, size_formatted, chunks, upload_date}]}
         async function loadUploadedFiles() {
             try {
                 const response = await fetch(`${API_BASE}/uploaded-files`);
-                
+
                 if (!response.ok) {
                     throw new Error(`HTTP错误: ${response.status}`);
                 }
                 
                 const result = await response.json();
-
-                const container = document.getElementById('uploaded-files');
+                const container = document.getElementById('uploaded-files');   // 获取文件列表容器
                 container.innerHTML = '';
 
-                // 检查API返回是否成功
-                if (!result.success) {
+                if (!result.success) {                     // 加载失败
                     container.innerHTML = `<div style="color: #dc3545; text-align: center; padding: 20px;">加载失败: ${result.error || '未知错误'}</div>`;
                     return;
                 }
 
-                if (!result.files || result.files.length === 0) {
+                if (!result.files || result.files.length === 0) {             // 空列表
                     container.innerHTML = '<div style="color: #666; text-align: center; padding: 20px;">暂无已上传的文件</div>';
                     return;
                 }
 
-                result.files.forEach(file => {
-                    // 使用DOM API创建元素，避免字符串拼接导致的安全问题
+                result.files.forEach(file => {             // 遍历文件列表
                     const fileItem = document.createElement('div');
                     fileItem.className = 'file-item';
                     
@@ -555,11 +602,11 @@
                     
                     const nameSpan = document.createElement('span');
                     nameSpan.className = 'name';
-                    nameSpan.textContent = '📄 ' + file.filename;
+                    nameSpan.textContent = '📄 ' + file.filename;           // 文件名
                     
                     const metaSpan = document.createElement('span');
                     metaSpan.className = 'file-meta';
-                    metaSpan.textContent = file.size_formatted + ' · ' + file.chunks + ' 个片段';
+                    metaSpan.textContent = file.size_formatted + ' · ' + file.chunks + ' 个片段';  // 文件大小和片段数
                     
                     fileInfo.appendChild(nameSpan);
                     fileInfo.appendChild(metaSpan);
@@ -570,8 +617,7 @@
                     const deleteBtn = document.createElement('button');
                     deleteBtn.className = 'btn-delete';
                     deleteBtn.textContent = '删除';
-                    // 使用闭包保存文件名，避免循环变量引用问题
-                    deleteBtn.addEventListener('click', () => deleteFile(file.filename, deleteBtn));
+                    deleteBtn.addEventListener('click', () => deleteFile(file.filename, deleteBtn));  // 绑定删除事件
                     
                     actionsDiv.appendChild(deleteBtn);
                     fileItem.appendChild(fileInfo);
@@ -586,118 +632,266 @@
             }
         }
 
+        // 【调用者】文件列表中的删除按钮（loadUploadedFiles()中绑定）
+        // 【功能】删除指定文件及其在向量数据库中的数据
+        // 【调用API】DELETE /api/files/{encodedFilename}
+        // 【参数】filename: 要删除的文件名；btn: 删除按钮元素（用于状态更新）
         async function deleteFile(filename, btn) {
+            const originalText = btn.textContent;          // 保存原始按钮文本
+            
             if (!confirm(`确定要删除文件 "${filename}" 吗？删除后将同时删除向量数据库中的数据，此操作不可恢复。`)) {
-                return;
+                return;                                    // 用户取消删除
             }
 
-            btn.disabled = true;
+            btn.disabled = true;                          // 禁用按钮
             btn.textContent = '删除中...';
 
             try {
-                // 对文件名进行URL编码，处理特殊字符
-                const encodedFilename = encodeURIComponent(filename);
+                const encodedFilename = encodeURIComponent(filename);  // URL编码文件名
                 const response = await fetch(`${API_BASE}/files/${encodedFilename}`, {
-                    method: 'DELETE'
+                    method: 'DELETE'                      // 发送删除请求
                 });
-
+                
                 if (response.ok) {
-                    btn.closest('.file-item').remove();
-
-                    // 显示成功提示
+                    const fileItem = btn.closest('.file-item');
+                    if (fileItem) {
+                        fileItem.remove();                 // 移除DOM元素
+                    }
+                    await loadUploadedFiles();             // 刷新文件列表
                     showAlert('manage-alert', 'success', `文件 ${filename} 删除成功，向量数据库中的相关数据已同步删除`);
                 } else {
-                    const result = await response.json();
-                    throw new Error(result.detail || '删除失败');
+                    let errorMsg = '删除失败';
+                    try {
+                        const result = await response.json();
+                        errorMsg = result.detail || errorMsg;
+                    } catch (e) {}
+                    throw new Error(errorMsg);
                 }
             } catch (error) {
+                console.error('删除失败:', error);
                 showAlert('manage-alert', 'error', '删除失败: ' + error.message);
             } finally {
-                btn.disabled = false;
-                btn.textContent = '删除';
+                btn.disabled = false;                     // 恢复按钮状态
+                btn.textContent = originalText;
             }
         }
 
-        /**
-         * 显示提示消息
-         */
+        // 【调用者】各业务函数（deleteFile、uploadFile等）
+        // 【功能】显示提示消息，3秒后自动隐藏
+        // 【参数】alertId: 提示框元素ID；type: 提示类型（success/error）；message: 提示内容
         function showAlert(alertId, type, message) {
-            const alert = document.getElementById(alertId);
-            alert.className = `alert ${type}`;
-            alert.textContent = message;
-            alert.style.display = 'block';
+            const alert = document.getElementById(alertId);   // 获取提示框元素
+            alert.className = `alert ${type}`;              // 设置提示类型样式
+            alert.textContent = message;                    // 设置提示内容
+            alert.style.display = 'block';                  // 显示提示
             
-            // 3秒后自动隐藏
             setTimeout(() => {
-                alert.style.display = 'none';
+                alert.style.display = 'none';               // 3秒后自动隐藏
             }, 3000);
         }
         
+        // 【调用者】文件选择input change事件、拖拽drop事件
+        // 【功能】上传文件到服务器，通过SSE接收实时处理进度
+        // 【调用API】POST /api/upload（使用FormData，enctype="multipart/form-data"）
+        // 【参数】file: File对象（来自input或拖拽事件）
+        // 【进度事件】{progress: 0-100, status: uploading/processing/storing/completed/failed, message: 状态描述}
         async function uploadFile(file) {
             const formData = new FormData();
-            formData.append('file', file);
+            formData.append('file', file);                   // 创建表单数据
             
             const alert = document.getElementById('upload-alert');
+            const progressBar = document.getElementById('upload-progress');
+            const progressFill = document.getElementById('progress-fill');
+            const progressText = document.getElementById('progress-text');
+            
+            // 重置UI状态
             alert.className = 'alert';
             alert.style.display = 'none';
+            progressBar.classList.remove('show');
+            progressFill.style.width = '0%';
+            progressText.classList.remove('show');
+            progressText.textContent = '';
+            
+            progressBar.classList.add('show');                // 显示进度条
+            progressText.classList.add('show');
             
             try {
                 const response = await fetch(`${API_BASE}/upload`, {
                     method: 'POST',
-                    body: formData
+                    body: formData                           // 发送上传请求
                 });
                 
-                const result = await response.json();
-                
-                if (response.ok) {
-                    alert.className = 'alert success';
-                    alert.textContent = `${result.message} - 切分了 ${result.chunks_count} 个片段`;
-                    alert.style.display = 'block';
-                    
-                    addFileToList(result.filename, result.chunks_count);
-                } else {
-                    alert.className = 'alert error';
-                    alert.textContent = result.detail || '上传失败';
-                    alert.style.display = 'block';
+                if (!response.ok) {
+                    throw new Error('上传请求失败');
                 }
+                
+                const reader = response.body.getReader();     // 使用SSE接收实时进度
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    
+                    while (buffer.includes('\n\n')) {
+                        const index = buffer.indexOf('\n\n');
+                        const eventData = buffer.substring(0, index);
+                        buffer = buffer.substring(index + 2);
+                        
+                        if (eventData.startsWith('data: ')) {
+                            const jsonStr = eventData.substring(6);
+                            try {
+                                const progress = JSON.parse(jsonStr);
+                                
+                                progressFill.style.width = `${progress.progress}%`;  // 更新进度条
+                                progressText.textContent = `${progress.message} - ${progress.progress}%`;
+                                
+                                if (progress.status === 'completed') {             // 上传完成
+                                    alert.className = 'alert success';
+                                    alert.textContent = progress.message;
+                                    alert.style.display = 'block';
+                                    loadUploadedFiles();
+                                } else if (progress.status === 'failed') {         // 上传失败
+                                    alert.className = 'alert error';
+                                    alert.textContent = progress.message;
+                                    alert.style.display = 'block';
+                                }
+                            } catch (e) {
+                                console.error('解析进度数据失败:', e);
+                            }
+                        }
+                    }
+                }
+                
             } catch (error) {
                 alert.className = 'alert error';
                 alert.textContent = '上传失败: ' + error.message;
                 alert.style.display = 'block';
+                progressFill.style.width = '0%';
+                progressText.textContent = '';
+            }
+        }
+
+        // 【调用者】uploadFile()（预留的轮询方案，当前使用SSE）
+        // 【功能】轮询上传任务状态并更新进度条（当前被SSE方案替代）
+        // 【调用API】GET /api/upload/task/{taskId}
+        // 【参数】taskId: 任务ID；filename: 文件名
+        // 【状态】pending/uploading/processing/storing/completed/failed
+        async function pollTaskStatus(taskId, filename) {
+            const alert = document.getElementById('upload-alert');
+            const progressFill = document.getElementById('progress-fill');
+            const progressText = document.getElementById('progress-text');
+            
+            const statusMap = {                              // 状态映射表
+                'pending': '等待处理...',
+                'uploading': '正在上传...',
+                'processing': '正在解析文档...',
+                'storing': '正在生成向量...',
+                'completed': '处理完成',
+                'failed': '处理失败'
+            };
+            
+            let attempts = 0;
+            const maxAttempts = 300;                        // 最多轮询300次
+            
+            while (attempts < maxAttempts) {
+                try {
+                    const response = await fetch(`${API_BASE}/upload/task/${taskId}`);  // 查询任务状态
+                    const result = await response.json();
+                    
+                    if (response.ok) {
+                        const status = result.status;
+                        const progress = result.progress || 0;
+                        const chunksCount = result.chunks_count || 0;
+                        
+                        progressFill.style.width = `${progress}%`;             // 更新进度条
+                        let statusText = statusMap[status] || status;
+                        progressText.textContent = `${statusText} - ${progress}%`;
+                        
+                        if (status === 'completed') {                          // 任务完成
+                            alert.className = 'alert success';
+                            alert.textContent = `文件 ${filename} 处理完成，切分了 ${chunksCount} 个片段`;
+                            progressText.textContent = `处理完成 - 100%`;
+                            loadUploadedFiles();
+                            break;
+                        } else if (status === 'failed') {                      // 任务失败
+                            alert.className = 'alert error';
+                            alert.textContent = `文件处理失败: ${result.error || '未知错误'}`;
+                            break;
+                        }
+                    }
+                } catch (error) {
+                    console.error('轮询任务状态失败:', error);
+                }
+                
+                attempts++;
+                await new Promise(resolve => setTimeout(resolve, 800));        // 每800ms轮询一次
+            }
+            
+            if (attempts >= maxAttempts) {                  // 超时处理
+                alert.className = 'alert error';
+                alert.textContent = '任务超时，请检查服务器状态';
             }
         }
         
+        // 【调用者】uploadFile()中上传完成时（预留，当前loadUploadedFiles()已替代）
+        // 【功能】动态添加文件项到文件列表DOM
+        // 【参数】filename: 文件名；chunksCount: 片段数量
         function addFileToList(filename, chunksCount) {
-            const container = document.getElementById('uploaded-files');
+            const container = document.getElementById('uploaded-files');   // 获取文件列表容器
             const fileItem = document.createElement('div');
             fileItem.className = 'file-item';
-            fileItem.innerHTML = `
-                <div class="file-info">
-                    <span class="name">📄 ${filename}</span>
-                    <span class="file-meta">${chunksCount} 个片段</span>
-                </div>
-                <div class="actions">
-                    <button class="btn-delete" onclick="deleteFile('${filename}', this)">删除</button>
-                </div>
-            `;
+            
+            const fileInfo = document.createElement('div');
+            fileInfo.className = 'file-info';
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'name';
+            nameSpan.textContent = '📄 ' + filename;                     // 文件名
+            
+            const metaSpan = document.createElement('span');
+            metaSpan.className = 'file-meta';
+            metaSpan.textContent = chunksCount + ' 个片段';               // 片段数
+            
+            fileInfo.appendChild(nameSpan);
+            fileInfo.appendChild(metaSpan);
+            
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'actions';
+            
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'btn-delete';
+            deleteBtn.textContent = '删除';
+            deleteBtn.addEventListener('click', () => deleteFile(filename, deleteBtn));  // 绑定删除事件
+            
+            actionsDiv.appendChild(deleteBtn);
+            fileItem.appendChild(fileInfo);
+            fileItem.appendChild(actionsDiv);
+            
             container.appendChild(fileItem);
         }
         
+        // 【调用者】文件选择input（HTML change事件）
+        // 【功能】用户选择文件后自动触发上传
         document.getElementById('file-input').addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (file) {
-                uploadFile(file);
+                uploadFile(file);                           // 上传选中的文件
             }
         });
         
+        // 【调用者】上传区域（HTML drag/drop事件）
+        // 【功能】处理拖拽文件到上传区域的事件
         const uploadArea = document.getElementById('upload-area');
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
-            uploadArea.classList.add('dragover');
+            uploadArea.classList.add('dragover');            // 添加拖拽样式
         });
         
         uploadArea.addEventListener('dragleave', () => {
-            uploadArea.classList.remove('dragover');
+            uploadArea.classList.remove('dragover');         // 移除拖拽样式
         });
         
         uploadArea.addEventListener('drop', (e) => {
@@ -705,28 +899,25 @@
             uploadArea.classList.remove('dragover');
             const file = e.dataTransfer.files[0];
             if (file) {
-                uploadFile(file);
+                uploadFile(file);                           // 上传拖拽的文件
             }
         });
         
-        /**
-         * 使用本地Ollama模型
-         * 自动加载本地已部署的大模型配置
-         */
+        // 【调用者】配置页"使用本地模型"按钮（HTML onclick="useLocalModel()"）
+        // 【功能】获取本地Ollama模型列表，自动填充API配置
+        // 【调用API】GET /api/ollama/models
+        // 【填充】llm_api_base=http://localhost:11434/v1；llm_api_key=ollama；llm_model_name=第一个模型
         async function useLocalModel() {
-            const alert = document.getElementById('config-alert');
+            const alert = document.getElementById('config-alert');  // 获取提示框
             
             try {
-                const response = await fetch(`${API_BASE}/ollama/models`);
+                const response = await fetch(`${API_BASE}/ollama/models`);  // 获取本地模型列表
                 const result = await response.json();
                 
                 if (result.success && result.models && result.models.length > 0) {
-                    // 设置默认的Ollama API地址
-                    document.getElementById('llm_api_base').value = 'http://localhost:11434/v1';
-                    // Ollama不需要API密钥
-                    document.getElementById('llm_api_key').value = 'ollama';
-                    // 使用第一个本地模型
-                    document.getElementById('llm_model_name').value = result.models[0].name;
+                    document.getElementById('llm_api_base').value = 'http://localhost:11434/v1';  // 设置API地址
+                    document.getElementById('llm_api_key').value = 'ollama';                      // 设置密钥
+                    document.getElementById('llm_model_name').value = result.models[0].name;      // 设置模型名
                     
                     alert.className = 'alert success';
                     alert.textContent = `已加载本地模型: ${result.models[0].name}`;
@@ -738,31 +929,29 @@
                 }
             } catch (error) {
                 alert.className = 'alert error';
+                // 提醒用户检查Ollama服务是否已启动
                 alert.textContent = '连接Ollama失败: ' + error.message;
                 alert.style.display = 'block';
             }
         }
 
-        /**
-         * 获取所有模型列表（包括线上模型和本地Ollama模型）
-         */
+        // 【调用者】showTab('config')切换到配置页时
+        // 【功能】加载线上模型列表和本地Ollama模型列表，填充到模型选择下拉框
+        // 【调用API】GET /api/models（线上）；GET /api/ollama/models（本地）
+        // 【填充】model-list datalist元素
         async function loadModels() {
-            const datalist = document.getElementById('model-list');
-            const hint = document.getElementById('model-hint');
-            const modelInput = document.getElementById('llm_model_name');
+            const datalist = document.getElementById('model-list');   // 获取模型列表datalist
+            const hint = document.getElementById('model-hint');       // 获取提示元素
             
-            // 清空现有选项
-            datalist.innerHTML = '';
+            datalist.innerHTML = '';                                 // 清空现有选项
             
             try {
-                // 获取线上模型列表
-                const onlineResponse = await fetch(`${API_BASE}/models`);
+                const onlineResponse = await fetch(`${API_BASE}/models`);  // 获取线上模型列表
                 const onlineResult = await onlineResponse.json();
                 
-                // 获取Ollama本地模型列表
                 let ollamaModels = [];
                 try {
-                    const ollamaResponse = await fetch(`${API_BASE}/ollama/models`);
+                    const ollamaResponse = await fetch(`${API_BASE}/ollama/models`);  // 获取本地模型列表
                     const ollamaResult = await ollamaResponse.json();
                     if (ollamaResult.success) {
                         ollamaModels = ollamaResult.models;
@@ -771,27 +960,24 @@
                     console.log('Ollama不可用，跳过');
                 }
                 
-                const allModels = new Set();
+                const allModels = new Set();                         // 用Set去重
                 
-                // 添加线上模型选项
                 if (onlineResult.success && onlineResult.models) {
                     Object.entries(onlineResult.models).forEach(([provider, info]) => {
                         info.models.forEach(model => {
-                            allModels.add(model);
+                            allModels.add(model);                    // 添加线上模型
                         });
                     });
                 }
                 
-                // 添加Ollama模型
                 ollamaModels.forEach(ollamaModel => {
-                    allModels.add(ollamaModel.name);
+                    allModels.add(ollamaModel.name);                 // 添加本地模型
                 });
                 
-                // 将所有模型添加到datalist
                 allModels.forEach(model => {
                     const option = document.createElement('option');
                     option.value = model;
-                    datalist.appendChild(option);
+                    datalist.appendChild(option);                    // 添加到datalist
                 });
                 
                 hint.textContent = `已加载 ${allModels.size} 个模型（线上+本地），可直接输入或从下拉建议中选择`;
@@ -803,52 +989,65 @@
             }
         }
         
-        /**
-         * 刷新模型列表
-         */
+        // 【调用者】配置页"刷新模型"按钮（HTML onclick="refreshModels()"）
+        // 【功能】重新加载线上和本地模型列表
+        // 【调用】loadModels()
         async function refreshModels() {
             await loadModels();
         }
         
+        // 【调用者】showTab('config')切换到配置页时
+        // 【功能】从后端加载当前系统配置并填充到表单
+        // 【调用API】GET /api/config
+        // 【填充】top_k、temperature、llm_api_base、llm_model_name、embedding_model_name
         async function loadConfig() {
             try {
-                const response = await fetch(`${API_BASE}/config`);
+                const response = await fetch(`${API_BASE}/config`);   // 获取配置
                 const config = await response.json();
                 
-                document.getElementById('top_k').value = config.top_k;
-                document.getElementById('temperature').value = config.temperature;
-                document.getElementById('llm_api_base').value = config.llm_api_base;
+                document.getElementById('top_k').value = config.top_k;             // 设置top_k
+                document.getElementById('temperature').value = config.temperature; // 设置温度
+                document.getElementById('llm_api_base').value = config.llm_api_base; // 设置API地址
                 
-                // 对于select元素，设置选中项
                 const modelSelect = document.getElementById('llm_model_name');
-                modelSelect.value = config.llm_model_name;
+                modelSelect.value = config.llm_model_name;                         // 设置模型名
                 
-                document.getElementById('llm_api_key').value = '';
+                document.getElementById('llm_api_key').value = '';                 // 清空密钥输入框（安全考虑）
                 
-                document.getElementById('current-config').textContent = JSON.stringify(config, null, 2);
+                if (config.embedding_model_name) {                                 // 更新向量化模型显示
+                    document.getElementById('embedding-model-display').textContent = config.embedding_model_name;
+                }
+                
+                document.getElementById('current-config').textContent = JSON.stringify(config, null, 2);  // 显示完整配置
             } catch (error) {
                 console.error('加载配置失败:', error);
             }
         }
         
+        // 【调用者】配置页"保存配置"按钮（HTML onclick="saveConfig()"）
+        // 【功能】将表单配置发送到后端保存（运行时动态更新RAG引擎）
+        // 【调用API】PUT /api/config（Content-Type: application/json）
+        // 【参数】top_k、temperature、llm_api_base、llm_api_key、llm_model_name
+        // 【返回】{success, message}
         async function saveConfig() {
-            const config = {
+            const config = {                                             // 构建配置对象
                 top_k: parseInt(document.getElementById('top_k').value) || 3,
                 temperature: parseFloat(document.getElementById('temperature').value) || 0.7,
                 llm_api_base: document.getElementById('llm_api_base').value || '',
                 llm_model_name: document.getElementById('llm_model_name').value || ''
             };
             
-            // 只有当API密钥输入框有值时才发送（空值不发送，保留原有配置）
             const apiKeyInput = document.getElementById('llm_api_key').value.trim();
-            if (apiKeyInput) {
+            if (apiKeyInput) {                                          // 输入了密钥就发送新密钥
                 config.llm_api_key = apiKeyInput;
+            } else {                                                    // 输入框为空时发送__KEEP__标记保持原有密钥
+                config.llm_api_key = '__KEEP__';
             }
             
             const alert = document.getElementById('config-alert');
             
             try {
-                const response = await fetch(`${API_BASE}/config`, {
+                const response = await fetch(`${API_BASE}/config`, {     // 发送保存请求
                     method: 'PUT',
                     headers: {
                         'Content-Type': 'application/json'
@@ -862,7 +1061,6 @@
                     alert.className = 'alert success';
                     alert.textContent = result.message;
                     alert.style.display = 'block';
-                    
                     document.getElementById('current-config').textContent = JSON.stringify(result.config, null, 2);
                 } else {
                     alert.className = 'alert error';
@@ -876,13 +1074,18 @@
             }
         }
         
+        // 【调用者】配置页"测试连接"按钮（HTML onclick="testModel()"）
+        // 【功能】测试大模型API连接是否正常
+        // 【调用API】POST /api/test-model
+        // 【参数】question（固定：'请回复"连接成功"'）；api_base；api_key；model_name
+        // 【返回】{success, model_name, answer} 或 {success: false, error}
         async function testModel() {
             const testQuestion = document.getElementById('test-question')?.value || '请介绍一下你自己';
-            const apiBase = document.getElementById('llm_api_base').value;
-            const apiKey = document.getElementById('llm_api_key').value;
-            const modelName = document.getElementById('llm_model_name').value;
+            const apiBase = document.getElementById('llm_api_base').value;    // API地址
+            const apiKey = document.getElementById('llm_api_key').value;      // API密钥
+            const modelName = document.getElementById('llm_model_name').value; // 模型名称
             
-            if (!apiBase || !modelName) {
+            if (!apiBase || !modelName) {                                    // 验证必填字段
                 const alert = document.getElementById('config-alert');
                 alert.className = 'alert error';
                 alert.textContent = '请先填写API地址和模型名称';
@@ -890,17 +1093,17 @@
                 return;
             }
             
-            const loading = document.getElementById('test-loading');
-            const resultDiv = document.getElementById('test-result');
+            const loading = document.getElementById('test-loading');          // 加载动画元素
+            const resultDiv = document.getElementById('test-result');         // 结果显示元素
             const alert = document.getElementById('config-alert');
             
             alert.style.display = 'none';
             resultDiv.className = 'test-result';
             resultDiv.style.display = 'none';
-            loading.classList.add('show');
+            loading.classList.add('show');                                   // 显示加载状态
             
             try {
-                const response = await fetch(`${API_BASE}/test-model`, {
+                const response = await fetch(`${API_BASE}/test-model`, {     // 发送测试请求
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -914,11 +1117,11 @@
                 });
                 
                 const result = await response.json();
-                loading.classList.remove('show');
+                loading.classList.remove('show');                    // 隐藏加载状态
                 
                 resultDiv.style.display = 'block';
                 
-                if (result.success) {
+                if (result.success) {                               // 测试成功
                     resultDiv.className = 'test-result success show';
                     resultDiv.innerHTML = `
                         <div class="label">✅ 模型连接成功！</div>
@@ -926,7 +1129,7 @@
                         <div class="label">模型回答:</div>
                         <div class="content">${result.answer}</div>
                     `;
-                } else {
+                } else {                                           // 测试失败
                     resultDiv.className = 'test-result error show';
                     resultDiv.innerHTML = `
                         <div class="label">❌ 模型连接失败</div>
@@ -934,7 +1137,7 @@
                         <div class="content">${result.error || '未知错误'}</div>
                     `;
                 }
-            } catch (error) {
+            } catch (error) {                                      // 请求异常
                 loading.classList.remove('show');
                 resultDiv.className = 'test-result error show';
                 resultDiv.innerHTML = `
@@ -944,9 +1147,11 @@
             }
         }
 
-        // 页面加载完成后自动加载文件列表（默认显示上传标签页）
+        // 【调用者】浏览器DOMContentLoaded事件（页面加载完成时）
+        // 【功能】页面加载完成后自动加载已上传文件列表和配置信息
         document.addEventListener('DOMContentLoaded', () => {
-            loadUploadedFiles();
+            loadUploadedFiles();                                   // 加载已上传文件列表
+            loadConfig();                                          // 加载配置信息（用于显示向量模型）
         });
     </script>
 </body>

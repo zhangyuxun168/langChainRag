@@ -267,7 +267,7 @@
         </div>
         
         <div class="typing-indicator" id="typing-indicator">
-            <div class="sender">阿勇文档助手</div>
+            <div class="sender">文档助手</div>
             <div class="typing-dots">
                 <span></span>
                 <span></span>
@@ -358,10 +358,7 @@
                 const modelType = result.llm_configured ? '大模型' : '本地模型';
                 
                 botMessage.innerHTML = `
-                    <div class="sender">
-                        阿勇文档助手 
-                        <span class="model-badge" title="当前使用的${modelType}">${modelName}</span>
-                    </div>
+                    <div class="sender">文档助手</div>
                     <div class="content">${escapeHtml(result.answer)}</div>
                     ${sourcesHtml}
                 `;
@@ -374,7 +371,7 @@
                 const errorMessage = document.createElement('div');
                 errorMessage.className = 'message bot';
                 errorMessage.innerHTML = `
-                    <div class="sender">阿勇文档助手</div>
+                    <div class="sender">文档助手</div>
                     <div class="content">抱歉，查询失败: ${error.message}</div>
                 `;
                 chatMessages.appendChild(errorMessage);

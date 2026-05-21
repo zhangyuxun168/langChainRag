@@ -348,6 +348,22 @@
             align-items: center;
         }
 
+        .btn-download {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .btn-download:hover {
+            background: #0056b3;
+        }
+
         .btn-delete {
             background: #dc3545;
             color: white;
@@ -358,6 +374,7 @@
             font-size: 12px;
             font-weight: 500;
             transition: all 0.2s;
+            margin-left: 8px;
         }
 
         .btn-delete:hover {
@@ -458,18 +475,16 @@
         </div>
         
         <div id="upload-tab" class="card">
-            <h2>上传文档</h2>
-            <div class="model-info" style="background: #f0f0ff; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                <div style="display: flex; align-items: center; gap: 10px;">
-                    <span style="font-weight: 500; color: #667eea;">向量化模型:</span>
-                    <span id="embedding-model-display" style="background: white; padding: 5px 12px; border-radius: 4px; font-family: monospace;"></span>
-                </div>
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
+                <h2>上传文档</h2>
+                <label for="enable-summary" style="font-size: 14px; color: #666; font-weight: normal;">生成文档总结<input type="checkbox" id="enable-summary" style="margin-left: 4px;"></label>
             </div>
+            
             <div class="upload-area" id="upload-area">
                 <div class="icon">📁</div>
                 <div class="text">点击或拖拽文件到此处上传</div>
-                <div class="hint">支持格式: .txt, .pdf, .docx</div>
-                <input type="file" id="file-input" accept=".txt,.pdf,.docx">
+                <div class="hint">支持格式: .txt, .pdf, .docx, .doc, .xlsx, .xls, .csv</div>
+                <input type="file" id="file-input" accept=".txt,.pdf,.docx,.doc,.xlsx,.xls,.csv">
             </div>
             
             <div class="alert" id="upload-alert"></div>
@@ -614,11 +629,18 @@
                     const actionsDiv = document.createElement('div');
                     actionsDiv.className = 'actions';
                     
+                    // 下载按钮
+                    const downloadBtn = document.createElement('button');
+                    downloadBtn.className = 'btn-download';
+                    downloadBtn.textContent = '下载';
+                    downloadBtn.addEventListener('click', () => downloadFile(file.filename));  // 绑定下载事件
+                    
                     const deleteBtn = document.createElement('button');
                     deleteBtn.className = 'btn-delete';
                     deleteBtn.textContent = '删除';
                     deleteBtn.addEventListener('click', () => deleteFile(file.filename, deleteBtn));  // 绑定删除事件
                     
+                    actionsDiv.appendChild(downloadBtn);
                     actionsDiv.appendChild(deleteBtn);
                     fileItem.appendChild(fileInfo);
                     fileItem.appendChild(actionsDiv);
@@ -630,6 +652,23 @@
                 const container = document.getElementById('uploaded-files');
                 container.innerHTML = `<div style="color: #dc3545; text-align: center; padding: 20px;">加载文件列表失败: ${error.message}</div>`;
             }
+        }
+
+        // 【调用者】文件列表中的下载按钮（loadUploadedFiles()中绑定）
+        // 【功能】下载指定文件
+        // 【调用API】GET /api/files/{encodedFilename}
+        // 【参数】filename: 要下载的文件名
+        function downloadFile(filename) {
+            const encodedFilename = encodeURIComponent(filename);
+            const url = `${API_BASE}/files/${encodedFilename}`;
+            
+            // 创建临时链接进行下载
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
         }
 
         // 【调用者】文件列表中的删除按钮（loadUploadedFiles()中绑定）
@@ -698,6 +737,10 @@
         async function uploadFile(file) {
             const formData = new FormData();
             formData.append('file', file);                   // 创建表单数据
+            
+            // 获取是否生成总结的勾选状态
+            const enableSummary = document.getElementById('enable-summary').checked;
+            formData.append('enable_summary', enableSummary ? 'true' : 'false');
             
             const alert = document.getElementById('upload-alert');
             const progressBar = document.getElementById('upload-progress');

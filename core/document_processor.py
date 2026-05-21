@@ -110,6 +110,38 @@ class DocumentProcessor:
                 
                 documents = [Document(page_content=text, metadata={"source": os.path.basename(file_path)})]
                 return documents
+            elif ext in [".xlsx", ".xls"]:                       # Excel文件
+                try:
+                    import pandas as pd
+                    # 读取Excel文件，支持多Sheet
+                    excel_file = pd.ExcelFile(file_path)
+                    text_parts = []
+                    
+                    for sheet_name in excel_file.sheet_names:
+                        df = excel_file.parse(sheet_name)
+                        # 将DataFrame转换为文本格式
+                        sheet_text = f"=== Sheet: {sheet_name} ===\n"
+                        sheet_text += df.to_string(index=False, na_rep='')
+                        text_parts.append(sheet_text)
+                    
+                    text = '\n\n'.join(text_parts)
+                    documents = [Document(page_content=text, metadata={"source": os.path.basename(file_path)})]
+                    return documents
+                except ImportError:
+                    raise RuntimeError("需要安装pandas和openpyxl来处理Excel文件")
+                except Exception as e:
+                    raise RuntimeError(f"无法处理Excel文件: {str(e)}")
+            elif ext == ".csv":                                  # CSV文件
+                try:
+                    import pandas as pd
+                    df = pd.read_csv(file_path, encoding='utf-8', errors='replace')
+                    text = df.to_string(index=False, na_rep='')
+                    documents = [Document(page_content=text, metadata={"source": os.path.basename(file_path)})]
+                    return documents
+                except ImportError:
+                    raise RuntimeError("需要安装pandas来处理CSV文件")
+                except Exception as e:
+                    raise RuntimeError(f"无法处理CSV文件: {str(e)}")
             else:
                 raise ValueError(f"不支持的文件格式: {ext}")     # 不支持的格式
             
@@ -143,6 +175,73 @@ class DocumentProcessor:
     
     # 【调用者】backend/main.py的upload_file()（文件格式校验）
     # 【功能】获取支持的文件格式列表
-    # 【返回】[".txt", ".pdf", ".docx", ".doc"]
+    # 【返回】[".txt", ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv"]
     def get_supported_extensions(self) -> List[str]:
-        return [".txt", ".pdf", ".docx", ".doc"]
+        return [".txt", ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv"]
+    
+    # 【调用者】backend/main.py的generate_upload_progress()
+    # 【功能】将总结内容保存为DOCX文件
+    # 【输入】summary_text: 总结文本；original_file_path: 原始文件路径
+    # 【输出】保存的总结文件路径
+    # 【命名规则】原文件名 + "总结.docx"
+    @staticmethod
+    def save_summary_to_docx(summary_text: str, original_file_path: str) -> str:
+        try:
+            from docx import Document
+            from docx.shared import Pt
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            
+            # 构建总结文件名：原文件名（不含扩展名） + "总结.docx"
+            dir_name = os.path.dirname(original_file_path)
+            file_name = os.path.basename(original_file_path)
+            name_without_ext = os.path.splitext(file_name)[0]
+            summary_file_name = f"{name_without_ext}总结.docx"
+            summary_file_path = os.path.join(dir_name, summary_file_name)
+            
+            # 创建DOCX文档
+            doc = Document()
+            
+            # 添加标题
+            title = doc.add_heading('文档总结', 0)
+            title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            
+            # 添加原始文件名信息
+            doc.add_paragraph(f"原始文件: {file_name}")
+            doc.add_paragraph(f"生成时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            doc.add_paragraph()  # 空行
+            
+            # 添加总结内容
+            doc.add_heading('总结内容', level=1)
+            
+            # 将总结文本按段落分割并添加
+            paragraphs = summary_text.split('\n\n')
+            for paragraph in paragraphs:
+                p = doc.add_paragraph(paragraph)
+                p.style.font.size = Pt(11)
+            
+            # 保存文档
+            doc.save(summary_file_path)
+            
+            print(f"【文档总结】总结文件保存成功: {summary_file_path}")
+            return summary_file_path
+        
+        except ImportError:
+            # 如果python-docx未安装，保存为TXT文件
+            dir_name = os.path.dirname(original_file_path)
+            file_name = os.path.basename(original_file_path)
+            name_without_ext = os.path.splitext(file_name)[0]
+            summary_file_name = f"{name_without_ext}总结.txt"
+            summary_file_path = os.path.join(dir_name, summary_file_name)
+            
+            with open(summary_file_path, 'w', encoding='utf-8') as f:
+                f.write(f"=== 文档总结 ===\n")
+                f.write(f"原始文件: {file_name}\n")
+                f.write(f"生成时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"\n{summary_text}\n")
+            
+            print(f"【文档总结】总结文件保存为TXT: {summary_file_path}")
+            return summary_file_path
+        
+        except Exception as e:
+            print(f"【文档总结】保存总结文件失败: {str(e)}")
+            raise RuntimeError(f"保存总结文件失败: {str(e)}")

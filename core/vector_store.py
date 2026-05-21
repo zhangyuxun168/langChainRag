@@ -675,8 +675,16 @@ class VectorStoreManager:
                                             llm_api_key=llm_api_key, llm_model_name=llm_model_name,
                                             use_local_ollama=use_local_ollama)
         
-        # 分批添加文档（固定每批20个）
-        batch_size = 20
+        # 根据文档数量动态调整批处理大小
+        # 小文档集使用较大批次，大文档集使用较小批次，平衡性能和内存
+        if total_docs <= 50:
+            batch_size = 20  # 文档数较少，使用较大批次
+        elif total_docs <= 200:
+            batch_size = 15  # 文档数中等，使用中等批次
+        else:
+            batch_size = max(5, total_docs // 50)  # 文档数较多，动态计算批次大小
+        
+        print(f"【向量化】根据文档数量({total_docs}个)，设置批次大小为: {batch_size}")
         
         # 遍历处理每一批
         for i in range(0, total_docs, batch_size):

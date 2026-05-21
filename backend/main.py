@@ -11,7 +11,7 @@ import requests  # HTTP客户端库，用于调用大模型API
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ========== FastAPI框架 ==========
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks  # FastAPI核心组件
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form  # FastAPI核心组件
 from fastapi.responses import RedirectResponse, StreamingResponse  # 重定向响应和流式响应
 # - FastAPI: 创建Web应用的主类
 # - File/UploadFile: 处理文件上传
@@ -260,16 +260,30 @@ import json
 
 # 【调用者】upload_file() - StreamingResponse生成器
 # 【功能】生成上传进度事件流（SSE），实时推送处理进度给前端
-# 【参数】file: 上传的FastAPI UploadFile对象
+# 【参数】file: 上传的FastAPI UploadFile对象；enable_summary: 是否生成文档总结
 # 【返回】SSE格式的进度数据，包含progress、status、message字段
-async def generate_upload_progress(file: UploadFile):
+async def generate_upload_progress(file: UploadFile, enable_summary: bool = False):
+    global upload_tasks
+    import uuid
+    task_id = str(uuid.uuid4())
+    
+    # 注册上传任务
+    upload_tasks[task_id] = {
+        "task_id": task_id,
+        "filename": file.filename,
+        "status": UploadStatus.UPLOADING,
+        "progress": 0,
+        "chunks_count": 0,
+        "error": None
+    }
+    
     try:
         # 1. 获取文件扩展名并转小写
         ext = os.path.splitext(file.filename)[1].lower()
 
         # 【SSE进度】10% - 开始验证文件格式
         yield f"data: {json.dumps({'progress': 10, 'status': '开始处理', 'message': '正在验证文件格式...'})}\n\n"
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
 
         # 【调用】document_processor.get_supported_extensions()
         # 【功能】获取支持的文件格式列表（.txt/.pdf/.docx/.doc）
@@ -289,13 +303,13 @@ async def generate_upload_progress(file: UploadFile):
 
         # 【SSE进度】15% - 开始保存文件
         yield f"data: {json.dumps({'progress': 15, 'status': 'uploading', 'message': '正在保存文件...'})}\n\n"
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
 
-        # 【流式写入】每次读取8KB，避免一次性读取大文件到内存
+        # 【流式写入】每次读取64KB，提高大文件写入效率
         file_size = 0
         with open(file_path, "wb") as buffer:
             while True:
-                chunk = await file.read(8192)  # 每次读取8KB
+                chunk = await file.read(65536)  # 每次读取64KB（提高大文件效率）
                 if not chunk:
                     break
                 buffer.write(chunk)
@@ -310,54 +324,180 @@ async def generate_upload_progress(file: UploadFile):
 
         # 【SSE进度】30% - 文件保存完成
         yield f"data: {json.dumps({'progress': 30, 'status': 'processing', 'message': '文件保存完成，正在解析文档...'})}\n\n"
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
+        
+        # 更新任务状态为处理中
+        upload_tasks[task_id]["status"] = UploadStatus.PROCESSING
+        upload_tasks[task_id]["progress"] = 30
 
-        # 【调用】document_processor.process_file()
-        # 【功能】加载文档并切分成小片段，返回List[Document]
-        documents = document_processor.process_file(file_path)
-        chunks_count = len(documents)
-
+        # 【优化】获取事件循环，用于后续线程池操作
+        loop = asyncio.get_event_loop()
+        
+        # 【优化】使用线程执行文档解析，避免阻塞事件循环
+        import threading
+        
+        documents = None
+        chunks_count = 0
+        parse_error = None
+        
+        def parse_in_thread():
+            nonlocal documents, chunks_count, parse_error
+            try:
+                documents = document_processor.process_file(file_path)
+                chunks_count = len(documents)
+            except Exception as e:
+                parse_error = e
+        
+        # 在后台线程中执行文档解析
+        parse_thread = threading.Thread(target=parse_in_thread)
+        parse_thread.start()
+        
+        # 等待解析完成，同时发送心跳进度
+        current_progress = 30
+        while parse_thread.is_alive():
+            await asyncio.sleep(0.3)
+            # 渐进式更新进度（30% - 49%）
+            if current_progress < 49:
+                current_progress += 1
+            yield f"data: {json.dumps({'progress': current_progress, 'status': 'processing', 'message': '正在解析文档...'})}\n\n"
+        
+        # 检查是否有错误
+        if parse_error:
+            yield f"data: {json.dumps({'progress': 0, 'status': 'failed', 'message': str(parse_error)})}\n\n"
+            return
+        
         # 【SSE进度】50% - 文档解析完成
         yield f"data: {json.dumps({'progress': 50, 'status': 'processing', 'message': f'文档解析完成，共 {chunks_count} 个片段'})}\n\n"
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
 
-        # 【SSE进度】60% - 开始向量化
-        yield f"data: {json.dumps({'progress': 60, 'status': 'storing', 'message': '开始向量化...'})}\n\n"
-        await asyncio.sleep(0.1)
-
-        # 【计算】分批向量化，每批数量根据文档总数动态调整
-        total_docs = len(documents)
-        batch_size = max(1, min(5, total_docs // 10))
-
-        # 【循环调用】vector_store_manager.add_documents()
-        # 【功能】分批将文档向量化并存储到ChromaDB
-        for i in range(0, total_docs, batch_size):
-            batch = documents[i:i+batch_size]
-            vector_store_manager.add_documents(batch, use_local_ollama=True)
-
-            # 【计算进度】60% - 95%
-            current = min(i + batch_size, total_docs)
-            progress = 60 + int((current / total_docs) * 35)
-            yield f"data: {json.dumps({'progress': progress, 'status': 'storing', 'message': f'正在向量化... {current}/{total_docs}'})}\n\n"
+        # 根据 enable_summary 参数决定是否生成文档总结
+        if enable_summary:
+            # 【SSE进度】55% - 开始文档总结
+            yield f"data: {json.dumps({'progress': 55, 'status': 'processing', 'message': '正在生成文档总结...'})}\n\n"
             await asyncio.sleep(0.05)
 
-        # 【SSE进度】100% - 处理完成
-        yield f"data: {json.dumps({'progress': 100, 'status': 'completed', 'message': f'处理完成，切分了 {chunks_count} 个片段', 'chunks_count': chunks_count, 'filename': file.filename})}\n\n"
+            # 【调用】rag_engine.summarize_document()
+            # 【功能】对文档内容进行总结
+            # 首先获取完整的文档内容
+            full_text = "\n\n".join([doc.page_content for doc in documents])
+            
+            # 【优化】使用线程池执行总结生成
+            summary = await loop.run_in_executor(
+                None,
+                lambda: rag_engine.summarize_document(full_text, file.filename)
+            )
+            
+            # 【调用】document_processor.save_summary_to_docx()
+            # 【功能】将总结保存为DOCX文件（命名规则：原文件名+总结.docx）
+            summary_file_path = document_processor.save_summary_to_docx(summary, file_path)
+            
+            # 【SSE进度】60% - 文档总结完成
+            summary_filename = os.path.basename(summary_file_path)
+            yield f"data: {json.dumps({'progress': 60, 'status': 'processing', 'message': f'文档总结完成，已保存为: {summary_filename}'})}\n\n"
+            await asyncio.sleep(0.05)
+
+            # 【SSE进度】65% - 开始向量化
+            yield f"data: {json.dumps({'progress': 65, 'status': 'storing', 'message': '开始向量化...'})}\n\n"
+            await asyncio.sleep(0.05)
+            
+            # 更新任务状态为存储中
+            upload_tasks[task_id]["status"] = UploadStatus.STORING
+            upload_tasks[task_id]["progress"] = 65
+
+            # 【分批向量化】根据实际切片数量更新进度
+            total_docs = len(documents)
+            # 大文件默认每批50个文档，小文件适当减小
+            if total_docs <= 50:
+                batch_size = total_docs  # 小文件一次性处理
+            elif total_docs <= 200:
+                batch_size = 20  # 中等文件
+            else:
+                batch_size = 40  # 大文件默认每批40个文档
+
+            # 【循环调用】vector_store_manager.add_documents()
+            # 【功能】分批将文档向量化并存储到ChromaDB
+            for i in range(0, total_docs, batch_size):
+                batch = documents[i:i+batch_size]
+                # 【调用】向量化并存储
+                vector_store_manager.add_documents(batch, use_local_ollama=True)
+
+                # 【计算进度】65% - 95%（根据实际处理数量）
+                current = min(i + batch_size, total_docs)
+                progress = 65 + int((current / total_docs) * 30)
+                yield f"data: {json.dumps({'progress': progress, 'status': 'storing', 'message': f'正在向量化... {current}/{total_docs}'})}\n\n"
+                await asyncio.sleep(0.05)
+
+            # 【SSE进度】100% - 处理完成
+            yield f"data: {json.dumps({'progress': 100, 'status': 'completed', 'message': f'处理完成，切分了 {chunks_count} 个片段，已生成文档总结', 'chunks_count': chunks_count, 'filename': file.filename})}\n\n"
+            
+            # 更新任务状态为完成
+            upload_tasks[task_id]["status"] = UploadStatus.COMPLETED
+            upload_tasks[task_id]["progress"] = 100
+            upload_tasks[task_id]["chunks_count"] = chunks_count
+        else:
+            # 不生成总结，直接向量化
+            # 【SSE进度】55% - 开始向量化
+            yield f"data: {json.dumps({'progress': 55, 'status': 'storing', 'message': '开始向量化...'})}\n\n"
+            await asyncio.sleep(0.05)
+            
+            # 更新任务状态为存储中
+            upload_tasks[task_id]["status"] = UploadStatus.STORING
+            upload_tasks[task_id]["progress"] = 55
+
+            # 【分批向量化】根据实际切片数量更新进度
+            total_docs = len(documents)
+            # 大文件默认每批50个文档，小文件适当减小
+            if total_docs <= 50:
+                batch_size = total_docs  # 小文件一次性处理
+            elif total_docs <= 200:
+                batch_size = 20  # 中等文件
+            else:
+                batch_size = 50  # 大文件默认每批50个文档
+
+            # 【循环调用】vector_store_manager.add_documents()
+            # 【功能】分批将文档向量化并存储到ChromaDB
+            for i in range(0, total_docs, batch_size):
+                batch = documents[i:i+batch_size]
+                # 【调用】向量化并存储
+                vector_store_manager.add_documents(batch, use_local_ollama=True)
+
+                # 【计算进度】55% - 95%（根据实际处理数量）
+                current = min(i + batch_size, total_docs)
+                progress = 55 + int((current / total_docs) * 40)
+                yield f"data: {json.dumps({'progress': progress, 'status': 'storing', 'message': f'正在向量化... {current}/{total_docs}'})}\n\n"
+                upload_tasks[task_id]["progress"] = progress
+                await asyncio.sleep(0.05)
+
+            # 【SSE进度】100% - 处理完成（不包含总结）
+            yield f"data: {json.dumps({'progress': 100, 'status': 'completed', 'message': f'处理完成，切分了 {chunks_count} 个片段', 'chunks_count': chunks_count, 'filename': file.filename})}\n\n"
+            
+            # 更新任务状态为完成
+            upload_tasks[task_id]["status"] = UploadStatus.COMPLETED
+            upload_tasks[task_id]["progress"] = 100
+            upload_tasks[task_id]["chunks_count"] = chunks_count
 
     except Exception as e:
         logging.error(f"【上传失败】错误: {str(e)}")
         yield f"data: {json.dumps({'progress': 0, 'status': 'failed', 'message': str(e)})}\n\n"
+        
+        # 更新任务状态为失败
+        if task_id in upload_tasks:
+            upload_tasks[task_id]["status"] = UploadStatus.FAILED
+            upload_tasks[task_id]["progress"] = 0
+            upload_tasks[task_id]["error"] = str(e)
 
 # 【调用者】前端上传组件（XMLHttpRequest/Fetch）
 # 【功能】文件上传接口，通过SSE实时推送处理进度
-# 【参数】file: 上传的FastAPI UploadFile对象（multipart/form-data）
+# 【参数】file: 上传的FastAPI UploadFile对象（multipart/form-data）；enable_summary: 是否生成文档总结
 # 【返回】StreamingResponse（SSE事件流，包含progress/status/message）
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), enable_summary: str = Form("false")):
+    # 将字符串转换为布尔值
+    enable_summary_bool = enable_summary.lower() == "true"
     # 【调用】generate_upload_progress()生成器
     # 【功能】返回SSE格式的上传进度事件流
     return StreamingResponse(
-        generate_upload_progress(file),
+        generate_upload_progress(file, enable_summary_bool),
         media_type="text/event-stream"
     )
 
@@ -633,6 +773,7 @@ async def delete_file(filename: str):
     """
     删除指定的已上传文件及其向量数据
     """
+    global upload_tasks
     try:
         upload_path = UPLOAD_DIR_PATH
         file_path = os.path.join(upload_path, filename)
@@ -644,14 +785,33 @@ async def delete_file(filename: str):
 
         logging.info(f"【删除】开始删除文件: {filename}")
 
-        # 1. 删除物理文件
+        # 检查文件是否正在上传
+        for task_id, task_info in upload_tasks.items():
+            if task_info.get("filename") == filename:
+                status = task_info.get("status")
+                if status in [UploadStatus.UPLOADING, UploadStatus.PROCESSING, UploadStatus.STORING]:
+                    logging.warning(f"【删除】文件正在上传中，拒绝删除: {filename}")
+                    raise HTTPException(status_code=400, detail=f"文件 {filename} 正在上传中，请等待上传完成后再删除")
+
+        # 1. 删除物理文件（带重试机制）
         if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                logging.info(f"【删除】物理文件删除成功: {filename}")
-            except Exception as e:
-                logging.error(f"【删除】物理文件删除失败: {filename}, 错误: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"删除文件失败: {str(e)}")
+            max_retries = 3
+            retry_delay = 0.5  # 500ms
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    os.remove(file_path)
+                    logging.info(f"【删除】物理文件删除成功: {filename}")
+                    break
+                except Exception as e:
+                    last_error = e
+                    logging.warning(f"【删除】物理文件删除失败(尝试 {attempt+1}/{max_retries}): {filename}, 错误: {str(e)}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+            else:
+                logging.error(f"【删除】物理文件删除失败(已重试 {max_retries} 次): {filename}, 错误: {str(last_error)}")
+                raise HTTPException(status_code=500, detail=f"删除文件失败: {str(last_error)}")
         else:
             logging.warning(f"【删除】物理文件不存在，跳过: {filename}")
 
